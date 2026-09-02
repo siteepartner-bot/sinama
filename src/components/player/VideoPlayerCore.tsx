@@ -133,9 +133,10 @@ export function VideoPlayerCore({
       {/* 2. Aparat Player */}
       {mediaState.sourceType === 'aparat' && (
         <AparatPlayer
-          key={`aparat_${mediaState.videoId || mediaState.sourceUrl}`}
+          key={`aparat_${mediaState.videoId || mediaState.sourceUrl}_${Math.floor((mediaState.currentTime || 0) / 2)}`}
           videoHash={mediaState.videoId || parseAparatUrl(mediaState.sourceUrl).videoHash || ''}
           isPlaying={mediaState.isPlaying}
+          currentTime={mediaState.currentTime || 0}
           onEnded={onEnded}
         />
       )}
@@ -162,6 +163,12 @@ export function VideoPlayerCore({
           key={`local_${mediaState.sourceUrl || mediaState.fileName}`}
           fileOrBlobUrl={mediaState.sourceUrl}
           fileName={mediaState.fileName || mediaState.title || 'فایل ویدیوی سیستم'}
+          initialPlayState={mediaState.isPlaying}
+          targetTime={mediaState.currentTime || 0}
+          playbackRate={mediaState.playbackRate || 1}
+          onPlayChange={onPlayChange}
+          onSeekChange={onSeekChange}
+          onRateChange={onRateChange}
           onEnded={onEnded}
         />
       )}

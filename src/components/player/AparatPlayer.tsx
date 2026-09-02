@@ -6,6 +6,7 @@ export interface AparatPlayerProps {
   key?: React.Key;
   videoHash: string;
   isPlaying: boolean;
+  currentTime?: number;
   onEnded?: () => void;
   onError?: (err: string) => void;
 }
@@ -13,6 +14,7 @@ export interface AparatPlayerProps {
 export function AparatPlayer({
   videoHash,
   isPlaying,
+  currentTime = 0,
   onError,
 }: AparatPlayerProps) {
   const [isLoading, setIsLoading] = useState(true);
@@ -45,7 +47,8 @@ export function AparatPlayer({
   }
 
   // Official Aparat Embed iframe format
-  const embedUrl = `https://www.aparat.com/video/video/embed/videohash/${videoHash}/vt/frame?autoplay=${isPlaying ? 'true' : 'false'}&recom=none`;
+  const startParam = currentTime > 0 ? `&start=${Math.floor(currentTime)}` : '';
+  const embedUrl = `https://www.aparat.com/video/video/embed/videohash/${videoHash}/vt/frame?autoplay=${isPlaying ? 'true' : 'false'}&recom=none${startParam}`;
 
   return (
     <div className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden" id="aparat-player-container">

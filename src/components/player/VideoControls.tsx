@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Pause, PictureInPicture2 } from 'lucide-react';
+import { Play, Pause, PictureInPicture2, RotateCcw, RotateCw } from 'lucide-react';
 import { ProgressBar } from './ProgressBar';
 import { VolumeControl } from './VolumeControl';
 import { QualityMenu } from './QualityMenu';
@@ -21,6 +21,8 @@ interface VideoControlsProps {
   isFullscreen?: boolean;
   onTogglePlay: () => void;
   onSeek: (time: number) => void;
+  onRewind?: (seconds: number) => void;
+  onForward?: (seconds: number) => void;
   onVolumeChange: (vol: number) => void;
   onToggleMute: () => void;
   onQualityChange?: (quality: string) => void;
@@ -44,6 +46,8 @@ export function VideoControls({
   isFullscreen = false,
   onTogglePlay,
   onSeek,
+  onRewind,
+  onForward,
   onVolumeChange,
   onToggleMute,
   onQualityChange,
@@ -75,7 +79,7 @@ export function VideoControls({
 
             <div className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 bg-black/50 backdrop-blur-md rounded-full border border-zinc-800 text-[11px] font-medium text-zinc-400">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span>پخش زنده اختصاصی</span>
+              <span>پخش زنده همزمان (سینک برای همه)</span>
             </div>
           </div>
 
@@ -91,14 +95,14 @@ export function VideoControls({
 
             {/* Actions Bar */}
             <div className="flex items-center justify-between text-zinc-100">
-              {/* Left Group (Play, Time, Volume) */}
-              <div className="flex items-center gap-3 md:gap-4">
+              {/* Left Group (Play, Rewind 10s, Forward 10s, Time, Volume) */}
+              <div className="flex items-center gap-2 md:gap-3">
                 {/* Play / Pause Toggle */}
                 <button
                   type="button"
                   onClick={onTogglePlay}
                   className="p-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white transition-all cursor-pointer shadow-md shadow-rose-500/20 active:scale-95"
-                  title={isPlaying ? 'توقف موقت (Space)' : 'پخش (Space)'}
+                  title={isPlaying ? 'توقف موقت همزمان (Space)' : 'پخش همزمان (Space)'}
                   id="btn-play-pause"
                 >
                   {isPlaying ? (
@@ -108,8 +112,32 @@ export function VideoControls({
                   )}
                 </button>
 
+                {/* Rewind 10s */}
+                <button
+                  type="button"
+                  onClick={() => onRewind ? onRewind(10) : onSeek(Math.max(0, currentTime - 10))}
+                  className="p-2 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-700/60 transition-all cursor-pointer active:scale-95 flex items-center gap-1 text-xs font-semibold"
+                  title="۱۰ ثانیه عقب (سینک دوطرفه)"
+                  id="btn-rewind-10s"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  <span className="text-[11px] font-mono">۱۰-</span>
+                </button>
+
+                {/* Forward 10s */}
+                <button
+                  type="button"
+                  onClick={() => onForward ? onForward(10) : onSeek(Math.min(duration, currentTime + 10))}
+                  className="p-2 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-700/60 transition-all cursor-pointer active:scale-95 flex items-center gap-1 text-xs font-semibold"
+                  title="۱۰ ثانیه جلو (سینک دوطرفه)"
+                  id="btn-forward-10s"
+                >
+                  <span className="text-[11px] font-mono">۱۰+</span>
+                  <RotateCw className="h-4 w-4" />
+                </button>
+
                 {/* Current / Duration Time */}
-                <div className="text-xs font-mono text-zinc-300 select-none flex items-center" dir="ltr" id="player-time-display">
+                <div className="text-xs font-mono text-zinc-300 select-none flex items-center ml-1" dir="ltr" id="player-time-display">
                   <span className="text-zinc-100 font-semibold">{formatVideoTime(currentTime)}</span>
                   <span className="mx-1 text-zinc-500">/</span>
                   <span className="text-zinc-400">{formatVideoTime(duration)}</span>
