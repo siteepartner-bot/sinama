@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Film, Copy, Share2, LogOut, Check, Crown } from 'lucide-react';
+import { Film, Copy, Share2, LogOut, Check, Crown, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
 
 export function RoomHeader() {
-  const { roomState, currentUser, isHost, leaveRoom } = useRoom();
+  const { roomState, currentUser, isHost, connectionStatus, leaveRoom } = useRoom();
   const [copied, setCopied] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
 
@@ -17,7 +17,6 @@ export function RoomHeader() {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
       } else {
-        // Fallback for non-secure or iframe environments
         const textArea = document.createElement('textarea');
         textArea.value = text;
         textArea.style.position = 'fixed';
@@ -55,12 +54,10 @@ export function RoomHeader() {
         });
       } catch (err: unknown) {
         if ((err as Error)?.name !== 'AbortError') {
-          // If share rejected/unsupported, fallback to copying
           handleCopyLink();
         }
       }
     } else {
-      // Fallback if Web Share API is not available
       handleCopyLink();
     }
   };
@@ -81,12 +78,31 @@ export function RoomHeader() {
             {isHost && (
               <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-md font-semibold">
                 <Crown className="h-3 w-3 text-amber-400" />
-                <span>شما میزبان هستید</span>
+                <span>میزبان</span>
+              </span>
+            )}
+            {/* Real-time Connection Status Badge */}
+            {connectionStatus === 'connected' && (
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span>سینک زنده (متصل)</span>
+              </span>
+            )}
+            {connectionStatus === 'reconnecting' && (
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-md font-medium">
+                <RefreshCw className="h-3 w-3 text-amber-400 animate-spin" />
+                <span>در حال اتصال مجدد...</span>
+              </span>
+            )}
+            {connectionStatus === 'disconnected' && (
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-md font-medium">
+                <WifiOff className="h-3 w-3 text-rose-400" />
+                <span>قطع ارتباط</span>
               </span>
             )}
           </div>
           <p className="text-xs text-zinc-400 mt-0.5">
-            کاربر: <span className="text-zinc-200 font-medium">{currentUser?.name}</span>
+            کاربر فعال: <span className="text-zinc-200 font-medium">{currentUser?.name}</span>
           </p>
         </div>
       </div>

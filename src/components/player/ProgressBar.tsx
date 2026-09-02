@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { formatVideoTime } from '../../utils/mediaParsers';
 
 interface ProgressBarProps {
@@ -19,9 +19,12 @@ export function ProgressBar({
   const [isHovered, setIsHovered] = useState(false);
   const [hoverPosition, setHoverPosition] = useState(0); // 0 to 1
   const [isDragging, setIsDragging] = useState(false);
+  const [dragTime, setDragTime] = useState<number | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  const lastEmitTimeRef = useRef<number>(0);
 
-  const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+  const displayTime = isDragging && dragTime !== null ? dragTime : currentTime;
+  const progressPercent = duration > 0 ? Math.min(100, (displayTime / duration) * 100) : 0;
   const bufferedPercent = duration > 0 ? Math.min(100, (bufferedTime / duration) * 100) : 0;
 
   const calculateTargetTime = useCallback(
@@ -29,7 +32,7 @@ export function ProgressBar({
       if (!barRef.current || duration <= 0) return 0;
       const rect = barRef.current.getBoundingClientRect();
       const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      return pos * duration;
+      return Math.round(pos * duration * 10) / 10;
     },
     [duration]
   );
@@ -42,18 +45,30 @@ export function ProgressBar({
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (disabled) return;
+    if (disabled || duration <= 0) return;
     setIsDragging(true);
     const targetTime = calculateTargetTime(e.clientX);
-    onSeek(targetTime);
+    setDragTime(targetTime);
+    lastEmitTimeRef.current = Date.now();
 
     const onWindowMouseMove = (moveEvent: MouseEvent) => {
       const time = calculateTargetTime(moveEvent.clientX);
-      onSeek(time);
+      setDragTime(time);
+
+      // Throttle intermediate emits during drag to 150ms
+      const now = Date.now();
+      if (now - lastEmitTimeRef.current > 150) {
+        lastEmitTimeRef.current = now;
+        onSeek(time);
+      }
     };
 
-    const onWindowMouseUp = () => {
+    const onWindowMouseUp = (upEvent: MouseEvent) => {
       setIsDragging(false);
+      const finalTime = calculateTargetTime(upEvent.clientX);
+      setDragTime(null);
+      onSeek(finalTime); // Final authoritative seek commit
+
       window.removeEventListener('mousemove', onWindowMouseMove);
       window.removeEventListener('mouseup', onWindowMouseUp);
     };

@@ -2,12 +2,18 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Loader2 } from 'lucide-react';
 import { VideoControls } from './VideoControls';
 import { VideoError } from './VideoError';
+import { realTimeClient } from '../../services/realtimeClient';
 
 export interface DirectVideoPlayerProps {
   key?: React.Key;
   src: string;
   title?: string;
   initialPlayState?: boolean;
+  targetTime?: number;
+  playbackRate?: number;
+  onPlayChange?: (isPlaying: boolean, currentTime: number) => void;
+  onSeekChange?: (time: number) => void;
+  onRateChange?: (rate: number) => void;
   onEnded?: () => void;
   onError?: (msg: string) => void;
 }
@@ -15,7 +21,12 @@ export interface DirectVideoPlayerProps {
 export function DirectVideoPlayer({
   src,
   title = 'ویدیوی مستقیم',
-  initialPlayState = true,
+  initialPlayState = false,
+  targetTime = 0,
+  playbackRate: externalPlaybackRate = 1,
+  onPlayChange,
+  onSeekChange,
+  onRateChange,
   onEnded,
   onError,
 }: DirectVideoPlayerProps) {
@@ -24,18 +35,21 @@ export function DirectVideoPlayer({
 
   // Playback states
   const [isPlaying, setIsPlaying] = useState<boolean>(initialPlayState);
-  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [currentTime, setCurrentTime] = useState<number>(targetTime);
   const [duration, setDuration] = useState<number>(0);
   const [bufferedTime, setBufferedTime] = useState<number>(0);
   const [volume, setVolume] = useState<number>(0.9);
   const [isMuted, setIsMuted] = useState<boolean>(false);
-  const [playbackRate, setPlaybackRate] = useState<number>(1);
+  const [playbackRate, setPlaybackRate] = useState<number>(externalPlaybackRate);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [showControls, setShowControls] = useState<boolean>(true);
   const [isBuffering, setIsBuffering] = useState<boolean>(true);
   const [hasError, setHasError] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [isEnded, setIsEnded] = useState<boolean>(false);
+
+  // Anti-loop lock ref
+  const isProgrammaticUpdate = useRef<boolean>(false);
 
   // Auto hide controls
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -60,6 +74,50 @@ export function DirectVideoPlayer({
       }
     };
   }, [isPlaying, triggerControlsShow]);
+
+  // Synchronize remote play/pause state
+  useEffect(() => {
+    if (!videoRef.current) return;
+    if (initialPlayState && videoRef.current.paused) {
+      isProgrammaticUpdate.current = true;
+      videoRef.current.play().catch(() => {
+        setIsPlaying(false);
+      }).finally(() => {
+        setTimeout(() => {
+          isProgrammaticUpdate.current = false;
+        }, 100);
+      });
+      setIsPlaying(true);
+    } else if (!initialPlayState && !videoRef.current.paused) {
+      isProgrammaticUpdate.current = true;
+      videoRef.current.pause();
+      setIsPlaying(false);
+      setTimeout(() => {
+        isProgrammaticUpdate.current = false;
+      }, 100);
+    }
+  }, [initialPlayState]);
+
+  // Synchronize remote seek target time (compensate drift > 0.75s)
+  useEffect(() => {
+    if (!videoRef.current || duration <= 0) return;
+    const diff = Math.abs(videoRef.current.currentTime - targetTime);
+    if (diff > 0.85) {
+      isProgrammaticUpdate.current = true;
+      videoRef.current.currentTime = targetTime;
+      setCurrentTime(targetTime);
+      setTimeout(() => {
+        isProgrammaticUpdate.current = false;
+      }, 100);
+    }
+  }, [targetTime, duration]);
+
+  // Synchronize remote playback rate
+  useEffect(() => {
+    if (externalPlaybackRate && externalPlaybackRate !== playbackRate) {
+      setPlaybackRate(externalPlaybackRate);
+    }
+  }, [externalPlaybackRate, playbackRate]);
 
   // Fullscreen change listener
   useEffect(() => {
@@ -96,6 +154,9 @@ export function DirectVideoPlayer({
     if (videoRef.current.paused) {
       videoRef.current.play().then(() => {
         setIsPlaying(true);
+        if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
+          onPlayChange?.(true, videoRef.current?.currentTime || 0);
+        }
       }).catch((e) => {
         console.warn('Autoplay blocked or play failed', e);
         setIsPlaying(false);
@@ -103,15 +164,31 @@ export function DirectVideoPlayer({
     } else {
       videoRef.current.pause();
       setIsPlaying(false);
+      if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
+        onPlayChange?.(false, videoRef.current.currentTime || 0);
+      }
     }
   };
 
   // Handle Seek
   const handleSeek = (time: number) => {
     if (!videoRef.current) return;
-    videoRef.current.currentTime = Math.max(0, Math.min(time, duration));
-    setCurrentTime(videoRef.current.currentTime);
+    const clampedTime = Math.max(0, Math.min(time, duration));
+    videoRef.current.currentTime = clampedTime;
+    setCurrentTime(clampedTime);
     setIsEnded(false);
+
+    if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
+      onSeekChange?.(clampedTime);
+    }
+  };
+
+  // Handle Playback Rate change
+  const handlePlaybackRateChange = (rate: number) => {
+    setPlaybackRate(rate);
+    if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
+      onRateChange?.(rate);
+    }
   };
 
   // Handle Volume
@@ -181,6 +258,11 @@ export function DirectVideoPlayer({
     setIsBuffering(false);
     setHasError(false);
 
+    if (targetTime > 0) {
+      videoRef.current.currentTime = targetTime;
+      setCurrentTime(targetTime);
+    }
+
     if (initialPlayState) {
       videoRef.current.play().then(() => {
         setIsPlaying(true);
@@ -206,7 +288,7 @@ export function DirectVideoPlayer({
   const onVideoError = () => {
     setIsBuffering(false);
     setHasError(true);
-    const msg = 'مرورگر قادر به پخش این فرمت ویدیویی نیست یا آدرس فایل در دسترس نمی‌باشد (فرمت‌های MP4, WebM, OGG پشتیبانی می‌شوند).';
+    const msg = 'مرورگر قادر به پخش مستقیم این کدک یا فرمت ویدیویی نیست (فرمت‌های MKV, MP4, WebM, MOV با کدک‌های استاندارد H.264/VP8/VP9/AV1 پشتیبانی می‌شوند).';
     setErrorMessage(msg);
     onError?.(msg);
   };
@@ -279,7 +361,7 @@ export function DirectVideoPlayer({
           onSeek={handleSeek}
           onVolumeChange={handleVolumeChange}
           onToggleMute={handleToggleMute}
-          onPlaybackRateChange={setPlaybackRate}
+          onPlaybackRateChange={handlePlaybackRateChange}
           onToggleFullscreen={handleToggleFullscreen}
           onTogglePiP={handleTogglePiP}
         />

@@ -1,14 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 import { VideoError } from './VideoError';
+import { realTimeClient } from '../../services/realtimeClient';
 
 export interface YouTubePlayerProps {
   key?: React.Key;
   videoId: string;
   isPlaying: boolean;
-  isMuted: boolean;
-  volume: number;
-  currentTime: number;
+  isMuted?: boolean;
+  volume?: number;
+  currentTime?: number;
+  playbackRate?: number;
+  onPlayChange?: (isPlaying: boolean, currentTime: number) => void;
+  onSeekChange?: (time: number) => void;
   onEnded?: () => void;
   onError?: (err: string) => void;
 }
@@ -16,17 +20,65 @@ export interface YouTubePlayerProps {
 export function YouTubePlayer({
   videoId,
   isPlaying,
-  isMuted,
-  currentTime,
+  isMuted = false,
+  volume = 0.9,
+  currentTime = 0,
+  playbackRate = 1,
+  onPlayChange,
+  onSeekChange,
+  onEnded,
   onError,
 }: YouTubePlayerProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const isProgrammatic = useRef<boolean>(false);
 
   useEffect(() => {
     setIsLoading(true);
     setHasError(false);
   }, [videoId]);
+
+  // Send postMessage to YouTube IFrame player API
+  const sendIframeCommand = (func: string, args: any[] = []) => {
+    if (!iframeRef.current || !iframeRef.current.contentWindow) return;
+    try {
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({
+          event: 'command',
+          func,
+          args
+        }),
+        '*'
+      );
+    } catch {
+      // Ignore
+    }
+  };
+
+  // Sync play/pause commands to iframe
+  useEffect(() => {
+    if (isLoading || hasError) return;
+    isProgrammatic.current = true;
+    if (isPlaying) {
+      sendIframeCommand('playVideo');
+    } else {
+      sendIframeCommand('pauseVideo');
+    }
+    setTimeout(() => {
+      isProgrammatic.current = false;
+    }, 150);
+  }, [isPlaying, isLoading, hasError]);
+
+  // Sync seek command to iframe
+  useEffect(() => {
+    if (isLoading || hasError || currentTime <= 0) return;
+    isProgrammatic.current = true;
+    sendIframeCommand('seekTo', [currentTime, true]);
+    setTimeout(() => {
+      isProgrammatic.current = false;
+    }, 150);
+  }, [currentTime, isLoading, hasError]);
 
   if (!videoId) {
     return (
@@ -49,7 +101,6 @@ export function YouTubePlayer({
     );
   }
 
-  // Construct official YouTube embed URL
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const embedParams = new URLSearchParams({
     enablejsapi: '1',
@@ -67,13 +118,14 @@ export function YouTubePlayer({
   return (
     <div className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden" id="youtube-player-container">
       {isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-10">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-10 pointer-events-none">
           <Loader2 className="h-8 w-8 text-rose-500 animate-spin mb-2" />
           <span className="text-xs text-zinc-400">در حال بارگذاری پلیر یوتیوب...</span>
         </div>
       )}
 
       <iframe
+        ref={iframeRef}
         key={`yt_${videoId}`}
         src={embedUrl}
         title="YouTube Video Player"

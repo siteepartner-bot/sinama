@@ -1,8 +1,16 @@
-import { Room, RoomUser, MediaState, ChatMessage } from '../types';
+import {
+  Room,
+  RoomUser,
+  MediaState,
+  ChatMessage,
+  ServerMessage,
+  VideoSource,
+  ConnectionStatus
+} from '../types';
+import { realTimeClient, RealTimeClient } from './realtimeClient';
 
 /**
  * Interface representing the Room Service contract.
- * Designed to be seamlessly replaced with Cloudflare Workers + Durable Objects + WebSockets in Phase 3.
  */
 export interface IRoomService {
   generateRoomId(): string;
@@ -16,14 +24,25 @@ export interface IRoomService {
     userId: string,
     update: Partial<Pick<RoomUser, 'micEnabled' | 'cameraEnabled' | 'screenSharingEnabled' | 'isOnline'>>
   ): Promise<void>;
-  updateMediaState(roomId: string, update: Partial<MediaState>): Promise<void>;
+  updateMediaState(roomId: string, update: Partial<MediaState>, skipBroadcast?: boolean): Promise<void>;
   sendChatMessage(roomId: string, senderId: string, senderName: string, text: string): Promise<ChatMessage>;
   getChatMessages(roomId: string): Promise<ChatMessage[]>;
   subscribe(roomId: string, onUpdate: (room: Room, messages: ChatMessage[]) => void): () => void;
+  onConnectionStatus(onStatus: (status: ConnectionStatus) => void): () => void;
+  getConnectionStatus(): ConnectionStatus;
+  
+  // Real-Time Video Event Broadcasters
+  broadcastPlay(roomId: string, currentTime: number): void;
+  broadcastPause(roomId: string, currentTime: number): void;
+  broadcastSeek(roomId: string, currentTime: number, isPlaying?: boolean): void;
+  broadcastSourceChange(roomId: string, source: VideoSource, currentTime?: number, isPlaying?: boolean): void;
+  broadcastLocalFile(roomId: string, fileName: string): void;
+  broadcastRateChange(roomId: string, rate: number, currentTime: number): void;
+  broadcastVideoEnded(roomId: string, currentTime: number): void;
 }
 
 // Storage keys
-const STORAGE_PREFIX = 'roomy_v2_';
+const STORAGE_PREFIX = 'roomy_v4_';
 const ROOMS_KEY = `${STORAGE_PREFIX}rooms`;
 const MESSAGES_KEY_PREFIX = `${STORAGE_PREFIX}messages_`;
 const SESSION_KEY = `${STORAGE_PREFIX}active_session`;
@@ -38,7 +57,9 @@ export const getDefaultMediaState = (): MediaState => ({
   isPlaying: false,
   currentTime: 0,
   duration: 360,
-  quality: '1080p'
+  quality: '1080p',
+  playbackRate: 1,
+  updatedAt: Date.now()
 });
 
 /**
@@ -52,13 +73,28 @@ export const getPersianTimeStr = (): string => {
 };
 
 /**
- * Local Durable Room Service implementation.
- * Stores room data locally and broadcasts events via BroadcastChannel for real-time multi-tab testing.
- * Prepared for Cloudflare Durable Objects backend transition.
+ * RoomService - Manages Room State & Real-Time Sync.
+ * Integrates with Cloudflare Workers Durable Objects and multi-tab RealTimeClient.
  */
-class LocalDurableRoomService implements IRoomService {
-  private channels: Map<string, BroadcastChannel> = new Map();
+class DurableRoomService implements IRoomService {
   private listeners: Map<string, Set<(room: Room, messages: ChatMessage[]) => void>> = new Map();
+  private realTimeUnsub: (() => void) | null = null;
+  private currentActiveRoomId: string | null = null;
+
+  constructor() {
+    // Attach real-time message handler
+    this.setupRealTimeMessageRouting();
+  }
+
+  private setupRealTimeMessageRouting(): void {
+    if (this.realTimeUnsub) {
+      this.realTimeUnsub();
+    }
+
+    this.realTimeUnsub = realTimeClient.onMessage((msg: ServerMessage) => {
+      this.handleRemoteServerMessage(msg);
+    });
+  }
 
   /**
    * Generates a 4-digit numeric Room ID (e.g., 4829, 1234, 8591)
@@ -67,8 +103,7 @@ class LocalDurableRoomService implements IRoomService {
     const existingRooms = this.getRoomsMap();
     let id = '';
     let attempts = 0;
-    
-    // Generate a 4-digit number between 1000 and 9999
+
     do {
       const array = new Uint32Array(1);
       crypto.getRandomValues(array);
@@ -86,7 +121,7 @@ class LocalDurableRoomService implements IRoomService {
   generateUserId(): string {
     const array = new Uint8Array(6);
     crypto.getRandomValues(array);
-    return 'usr_' + Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+    return 'usr_' + Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
   }
 
   // --- Internal storage helpers ---
@@ -97,7 +132,7 @@ class LocalDurableRoomService implements IRoomService {
       if (data) {
         return JSON.parse(data);
       }
-      
+
       // Default initial demo room (Code: 1234)
       const defaultRoomId = '1234';
       const defaultHostId = 'usr_demo_host';
@@ -125,7 +160,9 @@ class LocalDurableRoomService implements IRoomService {
           isPlaying: false,
           currentTime: 0,
           duration: 596,
-          quality: '1080p'
+          quality: '1080p',
+          playbackRate: 1,
+          updatedAt: Date.now()
         }
       };
 
@@ -176,36 +213,320 @@ class LocalDurableRoomService implements IRoomService {
     }
   }
 
-  private getChannel(roomId: string): BroadcastChannel | null {
-    if (typeof BroadcastChannel === 'undefined') return null;
-    if (!this.channels.has(roomId)) {
-      const channel = new BroadcastChannel(`roomy_channel_${roomId}`);
-      channel.onmessage = (event) => {
-        if (event.data && event.data.type === 'SYNC') {
-          this.notifySubscribers(roomId);
-        }
-      };
-      this.channels.set(roomId, channel);
-    }
-    return this.channels.get(roomId)!;
-  }
-
-  private broadcastUpdate(roomId: string): void {
-    const channel = this.getChannel(roomId);
-    if (channel) {
-      channel.postMessage({ type: 'SYNC', timestamp: Date.now() });
-    }
-    this.notifySubscribers(roomId);
-  }
-
   private notifySubscribers(roomId: string): void {
     const subs = this.listeners.get(roomId);
     if (!subs || subs.size === 0) return;
     const room = this.getRoomsMap()[roomId] || null;
     const messages = this.getMessagesForRoom(roomId);
     if (room) {
-      subs.forEach(cb => cb(room, messages));
+      subs.forEach((cb) => {
+        try {
+          cb(room, messages);
+        } catch (err) {
+          console.error('Error in room subscriber callback:', err);
+        }
+      });
     }
+  }
+
+  // --- Real-Time Server Message Handler (Remote Events) ---
+
+  private handleRemoteServerMessage(msg: ServerMessage): void {
+    const roomId = 'roomId' in msg ? msg.roomId : this.currentActiveRoomId;
+    if (!roomId) return;
+
+    const rooms = this.getRoomsMap();
+    const room = rooms[roomId];
+    if (!room) return;
+
+    const now = Date.now();
+
+    switch (msg.type) {
+      case 'ROOM_STATE_SYNC': {
+        // Late Join snapshot from authoritative Durable Object
+        const incomingRoom = msg.room;
+        if (incomingRoom) {
+          // Calculate drift offset for media playback time
+          const media = incomingRoom.mediaState;
+          if (media && media.isPlaying && media.updatedAt) {
+            media.currentTime = RealTimeClient.calculateSynchronizedTime(
+              media.currentTime,
+              msg.serverTimestamp || media.updatedAt,
+              media.playbackRate || 1
+            );
+          }
+          rooms[roomId] = incomingRoom;
+          this.saveRoomsMap(rooms);
+          if (msg.chatMessages) {
+            this.saveMessagesForRoom(roomId, msg.chatMessages);
+          }
+          this.notifySubscribers(roomId);
+        }
+        break;
+      }
+
+      case 'VIDEO_PLAY': {
+        // Calculate drift-corrected playback time
+        const syncTime = RealTimeClient.calculateSynchronizedTime(
+          msg.currentTime,
+          msg.serverTimestamp || msg.timestamp
+        );
+        room.mediaState = {
+          ...room.mediaState,
+          isPlaying: true,
+          currentTime: syncTime,
+          updatedAt: now,
+          updatedBy: msg.senderId,
+          updatedByName: msg.senderName
+        };
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+        this.notifySubscribers(roomId);
+        break;
+      }
+
+      case 'VIDEO_PAUSE': {
+        room.mediaState = {
+          ...room.mediaState,
+          isPlaying: false,
+          currentTime: msg.currentTime,
+          updatedAt: now,
+          updatedBy: msg.senderId,
+          updatedByName: msg.senderName
+        };
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+        this.notifySubscribers(roomId);
+        break;
+      }
+
+      case 'VIDEO_SEEK': {
+        room.mediaState = {
+          ...room.mediaState,
+          currentTime: msg.currentTime,
+          isPlaying: msg.isPlaying !== undefined ? msg.isPlaying : room.mediaState.isPlaying,
+          updatedAt: now,
+          updatedBy: msg.senderId,
+          updatedByName: msg.senderName
+        };
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+        this.notifySubscribers(roomId);
+        break;
+      }
+
+      case 'VIDEO_SOURCE_CHANGED': {
+        const source = msg.source;
+        room.mediaState = {
+          ...room.mediaState,
+          sourceType: source.type === 'none' ? null : source.type,
+          sourceUrl: source.url,
+          title: source.title || 'ویدیوی جدید',
+          videoId: source.videoId,
+          fileName: source.fileName,
+          isPlaying: msg.isPlaying !== undefined ? msg.isPlaying : true,
+          currentTime: msg.currentTime || 0,
+          duration: source.duration || 360,
+          updatedAt: now,
+          updatedBy: msg.senderId,
+          updatedByName: msg.senderName,
+          localFileOwner: null
+        };
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+        this.notifySubscribers(roomId);
+        break;
+      }
+
+      case 'LOCAL_FILE_SELECTED': {
+        room.mediaState = {
+          ...room.mediaState,
+          sourceType: 'local',
+          sourceUrl: '',
+          title: msg.fileName,
+          fileName: msg.fileName,
+          isPlaying: true,
+          currentTime: 0,
+          updatedAt: now,
+          updatedBy: msg.senderId,
+          updatedByName: msg.senderName,
+          localFileOwner: {
+            userId: msg.senderId,
+            userName: msg.senderName || 'کاربر',
+            fileName: msg.fileName
+          }
+        };
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+        this.notifySubscribers(roomId);
+        break;
+      }
+
+      case 'VIDEO_RATE_CHANGED': {
+        room.mediaState = {
+          ...room.mediaState,
+          playbackRate: msg.playbackRate,
+          currentTime: msg.currentTime,
+          updatedAt: now
+        };
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+        this.notifySubscribers(roomId);
+        break;
+      }
+
+      case 'VIDEO_ENDED': {
+        room.mediaState = {
+          ...room.mediaState,
+          isPlaying: false,
+          currentTime: msg.currentTime,
+          updatedAt: now
+        };
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+        this.notifySubscribers(roomId);
+        break;
+      }
+
+      case 'USER_JOINED': {
+        const user = msg.user;
+        const existingIndex = room.users.findIndex((u) => u.userId === user.userId);
+        if (existingIndex >= 0) {
+          room.users[existingIndex] = { ...room.users[existingIndex], ...user, isOnline: true };
+        } else {
+          room.users.push(user);
+        }
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+
+        const msgs = this.getMessagesForRoom(roomId);
+        msgs.push({
+          id: 'msg_join_' + now,
+          senderId: 'system',
+          senderName: 'سیستم',
+          text: `کاربر ${user.name} وارد اتاق شد.`,
+          timestamp: getPersianTimeStr(),
+          isSystem: true
+        });
+        this.saveMessagesForRoom(roomId, msgs);
+        this.notifySubscribers(roomId);
+        break;
+      }
+
+      case 'USER_LEFT': {
+        const leftUserId = msg.userId;
+        const user = room.users.find((u) => u.userId === leftUserId);
+        room.users = room.users.filter((u) => u.userId !== leftUserId);
+        if (room.hostId === leftUserId && room.users.length > 0) {
+          room.hostId = room.users[0].userId;
+          room.users[0].isHost = true;
+        }
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+
+        if (user) {
+          const msgs = this.getMessagesForRoom(roomId);
+          msgs.push({
+            id: 'msg_leave_' + now,
+            senderId: 'system',
+            senderName: 'سیستم',
+            text: `کاربر ${user.name} از اتاق خارج شد.`,
+            timestamp: getPersianTimeStr(),
+            isSystem: true
+          });
+          this.saveMessagesForRoom(roomId, msgs);
+        }
+        this.notifySubscribers(roomId);
+        break;
+      }
+
+      case 'CHAT_MESSAGE': {
+        const msgs = this.getMessagesForRoom(roomId);
+        if (!msgs.some((m) => m.id === msg.message.id)) {
+          msgs.push(msg.message);
+          this.saveMessagesForRoom(roomId, msgs);
+          this.notifySubscribers(roomId);
+        }
+        break;
+      }
+    }
+  }
+
+  // --- Real-Time Broadcaster Methods (Local User Actions) ---
+
+  broadcastPlay(roomId: string, currentTime: number): void {
+    if (realTimeClient.isRemoteEventActive) return;
+    this.updateMediaState(roomId, { isPlaying: true, currentTime, updatedAt: Date.now() }, true);
+    realTimeClient.emitPlay(currentTime);
+  }
+
+  broadcastPause(roomId: string, currentTime: number): void {
+    if (realTimeClient.isRemoteEventActive) return;
+    this.updateMediaState(roomId, { isPlaying: false, currentTime, updatedAt: Date.now() }, true);
+    realTimeClient.emitPause(currentTime);
+  }
+
+  broadcastSeek(roomId: string, currentTime: number, isPlaying?: boolean): void {
+    if (realTimeClient.isRemoteEventActive) return;
+    this.updateMediaState(roomId, { currentTime, isPlaying, updatedAt: Date.now() }, true);
+    realTimeClient.emitSeek(currentTime, isPlaying);
+  }
+
+  broadcastSourceChange(roomId: string, source: VideoSource, currentTime = 0, isPlaying = true): void {
+    if (realTimeClient.isRemoteEventActive) return;
+    this.updateMediaState(
+      roomId,
+      {
+        sourceType: source.type === 'none' ? null : source.type,
+        sourceUrl: source.url,
+        title: source.title,
+        videoId: source.videoId,
+        fileName: source.fileName,
+        isPlaying,
+        currentTime,
+        localFileOwner: null,
+        updatedAt: Date.now()
+      },
+      true
+    );
+    realTimeClient.emitSourceChange(source, currentTime, isPlaying);
+  }
+
+  broadcastLocalFile(roomId: string, fileName: string): void {
+    const session = this.getActiveSession(roomId);
+    const userName = session?.name || 'کاربر';
+    this.updateMediaState(
+      roomId,
+      {
+        sourceType: 'local',
+        title: fileName,
+        fileName,
+        isPlaying: true,
+        currentTime: 0,
+        localFileOwner: session
+          ? {
+              userId: session.userId,
+              userName,
+              fileName
+            }
+          : null,
+        updatedAt: Date.now()
+      },
+      true
+    );
+    realTimeClient.emitLocalFileSelected(fileName);
+  }
+
+  broadcastRateChange(roomId: string, rate: number, currentTime: number): void {
+    if (realTimeClient.isRemoteEventActive) return;
+    this.updateMediaState(roomId, { playbackRate: rate, currentTime, updatedAt: Date.now() }, true);
+    realTimeClient.emitRateChange(rate, currentTime);
+  }
+
+  broadcastVideoEnded(roomId: string, currentTime: number): void {
+    if (realTimeClient.isRemoteEventActive) return;
+    this.updateMediaState(roomId, { isPlaying: false, currentTime, updatedAt: Date.now() }, true);
+    realTimeClient.emitVideoEnded(currentTime);
   }
 
   // --- Public API Methods ---
@@ -216,12 +537,9 @@ class LocalDurableRoomService implements IRoomService {
       throw new Error('لطفاً نام خود را وارد کنید.');
     }
 
-    const roomId = customRoomId && customRoomId.trim().length > 0
-      ? customRoomId.trim()
-      : this.generateRoomId();
-
+    const roomId = customRoomId && customRoomId.trim().length > 0 ? customRoomId.trim() : this.generateRoomId();
     const hostId = this.generateUserId();
-    const cleanRoomName = (roomName && roomName.trim()) ? roomName.trim() : `اتاق ${cleanHostName}`;
+    const cleanRoomName = roomName && roomName.trim() ? roomName.trim() : `اتاق ${cleanHostName}`;
 
     const hostUser: RoomUser = {
       userId: hostId,
@@ -252,16 +570,18 @@ class LocalDurableRoomService implements IRoomService {
       isSystem: true
     };
 
-    // Save to store
     const rooms = this.getRoomsMap();
     rooms[roomId] = newRoom;
     this.saveRoomsMap(rooms);
     this.saveMessagesForRoom(roomId, [initialMessage]);
 
-    // Save active session
     this.saveActiveSession(roomId, hostUser);
+    this.currentActiveRoomId = roomId;
 
-    this.broadcastUpdate(roomId);
+    // Connect real-time transport
+    realTimeClient.connect(roomId, hostUser);
+
+    this.notifySubscribers(roomId);
     return { room: newRoom, currentUser: hostUser };
   }
 
@@ -284,22 +604,19 @@ class LocalDurableRoomService implements IRoomService {
 
     if (!room) {
       if (autoCreateIfNotFound) {
-        // Automatically create the room if it doesn't exist yet
         return this.createRoom(cleanUserName, `اتاق ${cleanUserName}`, cleanRoomId);
       }
       throw new Error(`اتاق با کد ${cleanRoomId} وجود ندارد یا منقضی شده است.`);
     }
 
-    // Check if we have an existing session in this room
     const existingSession = this.getActiveSession(cleanRoomId);
     let currentUser: RoomUser;
 
     const existingUserIndex = room.users.findIndex(
-      u => (existingSession && u.userId === existingSession.userId) || u.name === cleanUserName
+      (u) => (existingSession && u.userId === existingSession.userId) || u.name === cleanUserName
     );
 
     if (existingUserIndex >= 0) {
-      // Reconnect existing user
       currentUser = {
         ...room.users[existingUserIndex],
         name: cleanUserName,
@@ -307,7 +624,6 @@ class LocalDurableRoomService implements IRoomService {
       };
       room.users[existingUserIndex] = currentUser;
     } else {
-      // New member
       const newUserId = this.generateUserId();
       currentUser = {
         userId: newUserId,
@@ -321,7 +637,6 @@ class LocalDurableRoomService implements IRoomService {
       };
       room.users.push(currentUser);
 
-      // System notification
       const messages = this.getMessagesForRoom(cleanRoomId);
       messages.push({
         id: 'msg_join_' + Date.now(),
@@ -334,11 +649,25 @@ class LocalDurableRoomService implements IRoomService {
       this.saveMessagesForRoom(cleanRoomId, messages);
     }
 
+    // Late Join Synchronization: Calculate elapsed time for active video
+    const media = room.mediaState;
+    if (media.isPlaying && media.updatedAt) {
+      media.currentTime = RealTimeClient.calculateSynchronizedTime(
+        media.currentTime,
+        media.updatedAt,
+        media.playbackRate || 1
+      );
+    }
+
     rooms[cleanRoomId] = room;
     this.saveRoomsMap(rooms);
     this.saveActiveSession(cleanRoomId, currentUser);
+    this.currentActiveRoomId = cleanRoomId;
 
-    this.broadcastUpdate(cleanRoomId);
+    // Connect real-time transport
+    realTimeClient.connect(cleanRoomId, currentUser);
+
+    this.notifySubscribers(cleanRoomId);
     return { room, currentUser };
   }
 
@@ -347,36 +676,36 @@ class LocalDurableRoomService implements IRoomService {
     const rooms = this.getRoomsMap();
     const room = rooms[cleanRoomId];
 
-    if (!room) return;
+    if (room) {
+      const userToLeave = room.users.find((u) => u.userId === userId);
+      room.users = room.users.filter((u) => u.userId !== userId);
 
-    const userToLeave = room.users.find(u => u.userId === userId);
-    // Remove or mark offline
-    room.users = room.users.filter(u => u.userId !== userId);
+      if (userToLeave) {
+        const messages = this.getMessagesForRoom(cleanRoomId);
+        messages.push({
+          id: 'msg_leave_' + Date.now(),
+          senderId: 'system',
+          senderName: 'سیستم',
+          text: `کاربر ${userToLeave.name} از اتاق خارج شد.`,
+          timestamp: getPersianTimeStr(),
+          isSystem: true
+        });
+        this.saveMessagesForRoom(cleanRoomId, messages);
+      }
 
-    if (userToLeave) {
-      const messages = this.getMessagesForRoom(cleanRoomId);
-      messages.push({
-        id: 'msg_leave_' + Date.now(),
-        senderId: 'system',
-        senderName: 'سیستم',
-        text: `کاربر ${userToLeave.name} از اتاق خارج شد.`,
-        timestamp: getPersianTimeStr(),
-        isSystem: true
-      });
-      this.saveMessagesForRoom(cleanRoomId, messages);
+      if (room.hostId === userId && room.users.length > 0) {
+        room.users[0].isHost = true;
+        room.hostId = room.users[0].userId;
+      }
+
+      rooms[cleanRoomId] = room;
+      this.saveRoomsMap(rooms);
+      this.clearActiveSession(cleanRoomId);
+      this.notifySubscribers(cleanRoomId);
     }
 
-    // Reassign host if host left and there are other users
-    if (room.hostId === userId && room.users.length > 0) {
-      room.users[0].isHost = true;
-      room.hostId = room.users[0].userId;
-    }
-
-    rooms[cleanRoomId] = room;
-    this.saveRoomsMap(rooms);
-    this.clearActiveSession(cleanRoomId);
-
-    this.broadcastUpdate(cleanRoomId);
+    realTimeClient.disconnect();
+    this.currentActiveRoomId = null;
   }
 
   async updateUserMedia(
@@ -389,7 +718,7 @@ class LocalDurableRoomService implements IRoomService {
     const room = rooms[cleanRoomId];
     if (!room) return;
 
-    const userIndex = room.users.findIndex(u => u.userId === userId);
+    const userIndex = room.users.findIndex((u) => u.userId === userId);
     if (userIndex >= 0) {
       room.users[userIndex] = {
         ...room.users[userIndex],
@@ -397,11 +726,11 @@ class LocalDurableRoomService implements IRoomService {
       };
       rooms[cleanRoomId] = room;
       this.saveRoomsMap(rooms);
-      this.broadcastUpdate(cleanRoomId);
+      this.notifySubscribers(cleanRoomId);
     }
   }
 
-  async updateMediaState(roomId: string, update: Partial<MediaState>): Promise<void> {
+  async updateMediaState(roomId: string, update: Partial<MediaState>, skipBroadcast = false): Promise<void> {
     const cleanRoomId = roomId.trim();
     const rooms = this.getRoomsMap();
     const room = rooms[cleanRoomId];
@@ -409,12 +738,13 @@ class LocalDurableRoomService implements IRoomService {
 
     room.mediaState = {
       ...room.mediaState,
-      ...update
+      ...update,
+      updatedAt: update.updatedAt || Date.now()
     };
 
     rooms[cleanRoomId] = room;
     this.saveRoomsMap(rooms);
-    this.broadcastUpdate(cleanRoomId);
+    this.notifySubscribers(cleanRoomId);
   }
 
   async sendChatMessage(roomId: string, senderId: string, senderName: string, text: string): Promise<ChatMessage> {
@@ -435,7 +765,17 @@ class LocalDurableRoomService implements IRoomService {
     messages.push(newMessage);
     this.saveMessagesForRoom(roomId, messages);
 
-    this.broadcastUpdate(roomId);
+    // Broadcast chat to other room members
+    realTimeClient.sendMessage({
+      type: 'CHAT_MESSAGE',
+      roomId,
+      senderId,
+      senderName,
+      message: newMessage,
+      timestamp: Date.now()
+    });
+
+    this.notifySubscribers(roomId);
     return newMessage;
   }
 
@@ -448,9 +788,7 @@ class LocalDurableRoomService implements IRoomService {
       this.listeners.set(roomId, new Set());
     }
     this.listeners.get(roomId)!.add(onUpdate);
-    this.getChannel(roomId); // Ensure channel is active
 
-    // Send initial snapshot immediately
     const room = this.getRoomsMap()[roomId];
     if (room) {
       onUpdate(room, this.getMessagesForRoom(roomId));
@@ -462,14 +800,17 @@ class LocalDurableRoomService implements IRoomService {
         subs.delete(onUpdate);
         if (subs.size === 0) {
           this.listeners.delete(roomId);
-          const channel = this.channels.get(roomId);
-          if (channel) {
-            channel.close();
-            this.channels.delete(roomId);
-          }
         }
       }
     };
+  }
+
+  onConnectionStatus(onStatus: (status: ConnectionStatus) => void): () => void {
+    return realTimeClient.onStatusChange(onStatus);
+  }
+
+  getConnectionStatus(): ConnectionStatus {
+    return realTimeClient.getStatus();
   }
 
   // --- Session persistence helpers ---
@@ -500,8 +841,5 @@ class LocalDurableRoomService implements IRoomService {
   }
 }
 
-// Export singleton instance ready for use
-export const roomService: IRoomService & {
-  getActiveSession: (roomId: string) => RoomUser | null;
-  clearActiveSession: (roomId: string) => void;
-} = new LocalDurableRoomService();
+// Export singleton instance
+export const roomService = new DurableRoomService();

@@ -34,26 +34,14 @@ export interface MediaState {
   playbackRate?: number; // 0.5 to 2.0
   fileName?: string;
   videoId?: string;
-}
-
-// Phase 4 Sync Event Interfaces (Ready for WebSocket & Durable Objects sync in Phase 4)
-export type VideoSyncEventType =
-  | 'VIDEO_SOURCE_CHANGED'
-  | 'VIDEO_PLAY'
-  | 'VIDEO_PAUSE'
-  | 'VIDEO_SEEK'
-  | 'VIDEO_RATE_CHANGED'
-  | 'VIDEO_ENDED';
-
-export interface VideoSyncEvent {
-  type: VideoSyncEventType;
-  roomId: string;
-  senderId: string;
-  source?: VideoSource;
-  isPlaying?: boolean;
-  currentTime?: number;
-  playbackRate?: number;
-  timestamp: number;
+  updatedAt?: number; // timestamp of last play/pause/seek for sync calculation
+  updatedBy?: string; // userId who triggered the last action
+  updatedByName?: string; // name of the user who triggered the last action
+  localFileOwner?: {
+    userId: string;
+    userName: string;
+    fileName: string;
+  } | null;
 }
 
 // Backward compatibility alias
@@ -86,3 +74,177 @@ export interface ChatMessage {
 }
 
 export type ViewType = 'home' | 'create-room' | 'join-room' | 'room';
+
+export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
+
+// --------------------------------------------------------------------------
+// Phase 4: Real-time Message Types (Cloudflare Worker + Durable Objects + WS)
+// --------------------------------------------------------------------------
+
+export type VideoEventType =
+  | 'VIDEO_SOURCE_CHANGED'
+  | 'VIDEO_PLAY'
+  | 'VIDEO_PAUSE'
+  | 'VIDEO_SEEK'
+  | 'VIDEO_RATE_CHANGED'
+  | 'VIDEO_ENDED'
+  | 'LOCAL_FILE_SELECTED';
+
+export type ClientMessageType =
+  | 'JOIN_ROOM'
+  | 'LEAVE_ROOM'
+  | 'PING'
+  | 'CHAT_MESSAGE'
+  | VideoEventType;
+
+export type ServerMessageType =
+  | 'ROOM_STATE_SYNC'
+  | 'USER_JOINED'
+  | 'USER_LEFT'
+  | 'PONG'
+  | 'CHAT_MESSAGE'
+  | 'ERROR'
+  | VideoEventType;
+
+export interface BaseWsMessage {
+  roomId: string;
+  senderId: string;
+  senderName?: string;
+  timestamp: number;
+}
+
+export interface JoinRoomMessage extends BaseWsMessage {
+  type: 'JOIN_ROOM';
+  user: RoomUser;
+}
+
+export interface LeaveRoomMessage extends BaseWsMessage {
+  type: 'LEAVE_ROOM';
+}
+
+export interface VideoPlayMessage extends BaseWsMessage {
+  type: 'VIDEO_PLAY';
+  currentTime: number;
+  serverTimestamp?: number;
+}
+
+export interface VideoPauseMessage extends BaseWsMessage {
+  type: 'VIDEO_PAUSE';
+  currentTime: number;
+  serverTimestamp?: number;
+}
+
+export interface VideoSeekMessage extends BaseWsMessage {
+  type: 'VIDEO_SEEK';
+  currentTime: number;
+  isPlaying?: boolean;
+  serverTimestamp?: number;
+}
+
+export interface VideoSourceChangedMessage extends BaseWsMessage {
+  type: 'VIDEO_SOURCE_CHANGED';
+  source: VideoSource;
+  currentTime?: number;
+  isPlaying?: boolean;
+}
+
+export interface VideoRateChangedMessage extends BaseWsMessage {
+  type: 'VIDEO_RATE_CHANGED';
+  playbackRate: number;
+  currentTime: number;
+}
+
+export interface VideoEndedMessage extends BaseWsMessage {
+  type: 'VIDEO_ENDED';
+  currentTime: number;
+}
+
+export interface LocalFileSelectedMessage extends BaseWsMessage {
+  type: 'LOCAL_FILE_SELECTED';
+  fileName: string;
+  senderName: string;
+}
+
+export interface ChatWsMessage extends BaseWsMessage {
+  type: 'CHAT_MESSAGE';
+  message: ChatMessage;
+}
+
+export interface PingMessage {
+  type: 'PING';
+  timestamp: number;
+}
+
+export type ClientMessage =
+  | JoinRoomMessage
+  | LeaveRoomMessage
+  | VideoPlayMessage
+  | VideoPauseMessage
+  | VideoSeekMessage
+  | VideoSourceChangedMessage
+  | VideoRateChangedMessage
+  | VideoEndedMessage
+  | LocalFileSelectedMessage
+  | ChatWsMessage
+  | PingMessage;
+
+export interface RoomStateSyncMessage {
+  type: 'ROOM_STATE_SYNC';
+  roomId: string;
+  room: Room;
+  chatMessages: ChatMessage[];
+  serverTimestamp: number;
+}
+
+export interface UserJoinedMessage {
+  type: 'USER_JOINED';
+  roomId: string;
+  user: RoomUser;
+  timestamp: number;
+}
+
+export interface UserLeftMessage {
+  type: 'USER_LEFT';
+  roomId: string;
+  userId: string;
+  timestamp: number;
+}
+
+export interface PongMessage {
+  type: 'PONG';
+  timestamp: number;
+}
+
+export interface ErrorMessage {
+  type: 'ERROR';
+  message: string;
+  code?: string;
+}
+
+export type ServerMessage =
+  | RoomStateSyncMessage
+  | UserJoinedMessage
+  | UserLeftMessage
+  | VideoPlayMessage
+  | VideoPauseMessage
+  | VideoSeekMessage
+  | VideoSourceChangedMessage
+  | VideoRateChangedMessage
+  | VideoEndedMessage
+  | LocalFileSelectedMessage
+  | ChatWsMessage
+  | PongMessage
+  | ErrorMessage;
+
+// Legacy alias for compatibility
+export type VideoSyncEventType = VideoEventType;
+export interface VideoSyncEvent {
+  type: VideoSyncEventType;
+  roomId: string;
+  senderId: string;
+  source?: VideoSource;
+  isPlaying?: boolean;
+  currentTime?: number;
+  playbackRate?: number;
+  timestamp: number;
+}

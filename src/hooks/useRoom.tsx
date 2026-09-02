@@ -1,6 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useRef } from 'react';
-import { Room, RoomUser, MediaState, ChatMessage, RoomState, ViewType } from '../types';
+import { Room, RoomUser, MediaState, ChatMessage, RoomState, ViewType, ConnectionStatus, VideoSource } from '../types';
 import { roomService } from '../services/roomService';
+import { parseYouTubeUrl, parseAparatUrl } from '../utils/mediaParsers';
 
 interface RoomContextType {
   view: ViewType;
@@ -11,6 +12,7 @@ interface RoomContextType {
   isLoading: boolean;
   error: string | null;
   pendingRoomId: string | null;
+  connectionStatus: ConnectionStatus;
   clearError: () => void;
   createRoom: (userName: string, roomName?: string, customRoomId?: string) => Promise<string>;
   joinRoom: (userName: string, roomId: string, autoCreateIfNotFound?: boolean) => Promise<boolean>;
@@ -21,9 +23,11 @@ interface RoomContextType {
   toggleScreenShare: () => Promise<void>;
   sendChatMessage: (text: string) => Promise<void>;
   changeVideoSource: (sourceType: 'youtube' | 'aparat' | 'direct' | 'local', url: string, title?: string) => Promise<void>;
-  setVideoPlaying: (isPlaying: boolean) => Promise<void>;
-  seekVideo: (time: number) => Promise<void>;
+  setVideoPlaying: (isPlaying: boolean, currentTime?: number) => Promise<void>;
+  seekVideo: (time: number, isPlaying?: boolean) => Promise<void>;
   setVideoQuality: (quality: string) => Promise<void>;
+  setPlaybackRate: (rate: number) => Promise<void>;
+  handleVideoEnded: () => Promise<void>;
 }
 
 const RoomContext = createContext<RoomContextType | undefined>(undefined);
@@ -36,8 +40,22 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connected');
 
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  const statusUnsubRef = useRef<(() => void) | null>(null);
+
+  // Subscribe to connection status changes
+  useEffect(() => {
+    statusUnsubRef.current = roomService.onConnectionStatus((status) => {
+      setConnectionStatus(status);
+    });
+    return () => {
+      if (statusUnsubRef.current) {
+        statusUnsubRef.current();
+      }
+    };
+  }, []);
 
   // Helper to change view and synchronize URL history
   const setView = useCallback((newView: ViewType, pathOverride?: string) => {
@@ -74,7 +92,7 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
       // Keep currentUser reference synchronized
       const activeSession = roomService.getActiveSession(roomId);
       if (activeSession) {
-        const freshUser = updatedRoom.users.find(u => u.userId === activeSession.userId);
+        const freshUser = updatedRoom.users.find((u) => u.userId === activeSession.userId);
         if (freshUser) {
           setCurrentUser(freshUser);
         }
@@ -101,12 +119,10 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     const path = window.location.pathname;
     const pathParts = path.split('/').filter(Boolean);
 
-    // Check if URL is /room/:roomId
     let roomId: string | null = null;
     if (pathParts[0] === 'room' && pathParts[1]) {
       roomId = pathParts[1];
     } else {
-      // Hash fallback check: #/room/XYZ
       const hash = window.location.hash;
       if (hash.startsWith('#/room/')) {
         roomId = hash.replace('#/room/', '');
@@ -118,25 +134,20 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
       const room = await roomService.getRoom(roomId);
 
       if (!room) {
-        // Room doesn't exist yet, but we have the target 4-digit code
-        // Instead of fatal error, we allow entering a name to activate it or choose another code
         setViewState('room');
         setIsLoading(false);
         return;
       }
 
-      // Check if user already has an active session in this room
       const sessionUser = roomService.getActiveSession(roomId);
-      const existingUserInRoom = sessionUser ? room.users.find(u => u.userId === sessionUser.userId) : null;
+      const existingUserInRoom = sessionUser ? room.users.find((u) => u.userId === sessionUser.userId) : null;
 
       if (existingUserInRoom) {
-        // Automatically rejoin
         setCurrentRoom(room);
         setCurrentUser(existingUserInRoom);
         setupRoomSubscription(roomId);
         setViewState('room');
       } else {
-        // Room exists, but user needs to enter their name
         setCurrentRoom(room);
         setCurrentUser(null);
         setViewState('room');
@@ -213,7 +224,7 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Join directly for users who clicked a shared link or have pending room ID
+  // Join directly
   const joinDirectly = async (userName: string): Promise<boolean> => {
     const targetRoomId = currentRoom?.roomId || pendingRoomId || '1234';
     return joinRoom(userName, targetRoomId, true);
@@ -244,28 +255,26 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     window.history.pushState(null, '', '/');
   };
 
-  // Toggle user audio
+  // User media controls
   const toggleMic = async () => {
     if (!currentRoom || !currentUser) return;
     const nextState = !currentUser.micEnabled;
     await roomService.updateUserMedia(currentRoom.roomId, currentUser.userId, { micEnabled: nextState });
-    setCurrentUser(prev => prev ? { ...prev, micEnabled: nextState } : null);
+    setCurrentUser((prev) => (prev ? { ...prev, micEnabled: nextState } : null));
   };
 
-  // Toggle user camera
   const toggleCamera = async () => {
     if (!currentRoom || !currentUser) return;
     const nextState = !currentUser.cameraEnabled;
     await roomService.updateUserMedia(currentRoom.roomId, currentUser.userId, { cameraEnabled: nextState });
-    setCurrentUser(prev => prev ? { ...prev, cameraEnabled: nextState } : null);
+    setCurrentUser((prev) => (prev ? { ...prev, cameraEnabled: nextState } : null));
   };
 
-  // Toggle screen share
   const toggleScreenShare = async () => {
     if (!currentRoom || !currentUser) return;
     const nextState = !currentUser.screenSharingEnabled;
     await roomService.updateUserMedia(currentRoom.roomId, currentUser.userId, { screenSharingEnabled: nextState });
-    setCurrentUser(prev => prev ? { ...prev, screenSharingEnabled: nextState } : null);
+    setCurrentUser((prev) => (prev ? { ...prev, screenSharingEnabled: nextState } : null));
   };
 
   // Send chat message
@@ -274,31 +283,73 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     await roomService.sendChatMessage(currentRoom.roomId, currentUser.userId, currentUser.name, text);
   };
 
-  // Video state controls (Authorized for all members as requested in Phase 2)
+  // Real-Time Video Synchronizers
   const changeVideoSource = async (
     sourceType: 'youtube' | 'aparat' | 'direct' | 'local',
     url: string,
     title?: string
   ) => {
     if (!currentRoom) return;
-    const updatedMedia: Partial<MediaState> = {
-      sourceType,
-      sourceUrl: url,
-      title: title || (sourceType === 'local' ? 'ویدیوی محلی کاربر' : 'ویدیوی جدید'),
-      isPlaying: true,
-      currentTime: 0
+
+    if (sourceType === 'local') {
+      // Local computer file: notify room about local file without streaming the blob
+      const cleanFileName = title || 'فایل ویدیوی سیستم';
+      roomService.broadcastLocalFile(currentRoom.roomId, cleanFileName);
+      // For local user, set the sourceUrl locally
+      roomService.updateMediaState(currentRoom.roomId, {
+        sourceType: 'local',
+        sourceUrl: url,
+        title: cleanFileName,
+        fileName: cleanFileName,
+        isPlaying: true,
+        currentTime: 0
+      });
+      return;
+    }
+
+    let videoId: string | undefined;
+    if (sourceType === 'youtube') {
+      videoId = parseYouTubeUrl(url).videoId || undefined;
+    } else if (sourceType === 'aparat') {
+      videoId = parseAparatUrl(url).videoHash || undefined;
+    }
+
+    const source: VideoSource = {
+      type: sourceType,
+      url,
+      videoId,
+      title: title || (sourceType === 'youtube' ? 'ویدیوی یوتیوب' : sourceType === 'aparat' ? 'ویدیوی آپارات' : 'ویدیوی مستقیم'),
+      duration: 360
     };
-    await roomService.updateMediaState(currentRoom.roomId, updatedMedia);
+
+    roomService.broadcastSourceChange(currentRoom.roomId, source, 0, true);
   };
 
-  const setVideoPlaying = async (isPlaying: boolean) => {
+  const setVideoPlaying = async (isPlaying: boolean, currentTime?: number) => {
     if (!currentRoom) return;
-    await roomService.updateMediaState(currentRoom.roomId, { isPlaying });
+    const time = currentTime !== undefined ? currentTime : currentRoom.mediaState.currentTime || 0;
+    if (isPlaying) {
+      roomService.broadcastPlay(currentRoom.roomId, time);
+    } else {
+      roomService.broadcastPause(currentRoom.roomId, time);
+    }
   };
 
-  const seekVideo = async (currentTime: number) => {
+  const seekVideo = async (currentTime: number, isPlaying?: boolean) => {
     if (!currentRoom) return;
-    await roomService.updateMediaState(currentRoom.roomId, { currentTime });
+    roomService.broadcastSeek(currentRoom.roomId, currentTime, isPlaying);
+  };
+
+  const setPlaybackRate = async (playbackRate: number) => {
+    if (!currentRoom) return;
+    const currentTime = currentRoom.mediaState.currentTime || 0;
+    roomService.broadcastRateChange(currentRoom.roomId, playbackRate, currentTime);
+  };
+
+  const handleVideoEnded = async () => {
+    if (!currentRoom) return;
+    const currentTime = currentRoom.mediaState.duration || currentRoom.mediaState.currentTime || 0;
+    roomService.broadcastVideoEnded(currentRoom.roomId, currentTime);
   };
 
   const setVideoQuality = async (quality: string) => {
@@ -308,12 +359,12 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
 
   const clearError = () => setError(null);
 
-  // Computed RoomState object providing backward-compatible props
+  // Computed RoomState
   const roomState: RoomState | null = currentRoom
     ? {
         ...currentRoom,
         currentUser,
-        members: currentRoom.users.map(u => ({
+        members: currentRoom.users.map((u) => ({
           ...u,
           id: u.userId,
           isMe: currentUser?.userId === u.userId,
@@ -342,6 +393,7 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         error,
         pendingRoomId,
+        connectionStatus,
         clearError,
         createRoom,
         joinRoom,
@@ -354,7 +406,9 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
         changeVideoSource,
         setVideoPlaying,
         seekVideo,
-        setVideoQuality
+        setVideoQuality,
+        setPlaybackRate,
+        handleVideoEnded
       }}
     >
       {children}

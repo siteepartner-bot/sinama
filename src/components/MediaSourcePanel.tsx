@@ -104,14 +104,17 @@ export function MediaSourcePanel() {
 
   const loadLocalFile = (file: File) => {
     setErrorMsg(null);
-    if (!file.type.startsWith('video/') && !file.name.match(/\.(mp4|webm|mkv|mov|ogg|avi)$/i)) {
-      setErrorMsg('فرمت فایل انتخابی ویدیو نیست. لطفاً یک فایل ویدیویی معتبر انتخاب کنید.');
+    const isVideoType = file.type.startsWith('video/') || file.type === 'video/x-matroska' || file.type === 'video/mkv';
+    const hasVideoExt = /\.(mp4|mkv|webm|mov|ogg|avi|m4v|3gp|ts)$/i.test(file.name);
+
+    if (!isVideoType && !hasVideoExt) {
+      setErrorMsg('فرمت فایل انتخابی ویدیو نیست. لطفاً یک فایل ویدیویی معتبر (MP4, MKV, WebM, MOV) انتخاب کنید.');
       return;
     }
 
     const fileUrl = URL.createObjectURL(file);
     changeVideoSource('local', fileUrl, file.name);
-    showSuccessFeedback(`فایل «${file.name}» آماده پخش است.`);
+    showSuccessFeedback(`فایل «${file.name}» (MKV / ویدیو) آماده پخش است.`);
   };
 
   // Drag and drop event handlers
@@ -169,7 +172,7 @@ export function MediaSourcePanel() {
           <Link2 className="h-4.5 w-4.5 text-rose-500" />
           <span>انتخاب منبع ویدیو</span>
         </h3>
-        <span className="text-[11px] text-zinc-500">مرحله ۳: پخش لوکال ویدیو</span>
+        <span className="text-[11px] text-zinc-500">مرحله ۴: سینک Real-Time ویدیو</span>
       </div>
 
       {/* Tabs Navigation */}
@@ -371,7 +374,7 @@ export function MediaSourcePanel() {
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept="video/*,.mp4,.webm,.mov,.mkv,.ogg"
+              accept="video/*,.mp4,.mkv,.webm,.mov,.ogg,.avi,.m4v,video/x-matroska,video/mkv,video/mp4,video/webm"
               className="hidden"
             />
             <div className="p-3 bg-rose-500/10 text-rose-400 rounded-2xl mb-2.5 border border-rose-500/20">
@@ -379,9 +382,9 @@ export function MediaSourcePanel() {
             </div>
             <h4 className="text-xs font-bold text-zinc-200">ویدیو را اینجا بکشید یا برای انتخاب کلیک کنید</h4>
             <p className="text-[11px] text-zinc-500 mt-1.5 text-center leading-relaxed max-w-sm">
-              پشتیبانی از انواع فرمت‌های ویدیویی (MP4، WebM، MOV، MKV) بدون هیچ‌گونه محدودیت حجمی فایل
+              پشتیبانی کامل از فرمت‌های <span className="text-rose-400 font-semibold">MKV</span>، MP4، WebM، MOV و AVI بدون محدودیت حجم فایل
               <br />
-              <span className="text-zinc-400 font-medium">(پخش کاملاً درون مرورگر بدون آپلود روی سرور جهت حفظ ۱۰۰٪ حریم خصوصی)</span>
+              <span className="text-zinc-400 font-medium">(پخش کاملاً روان درون مرورگر بدون آپلود روی سرور جهت حفظ حریم خصوصی)</span>
             </p>
           </div>
         )}
