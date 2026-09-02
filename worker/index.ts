@@ -60,6 +60,9 @@ import {
 
 export interface Env {
   ROOM_DO: DurableObjectNamespace;
+  ASSETS?: {
+    fetch: (request: Request) => Promise<Response>;
+  };
 }
 
 interface SessionData {
@@ -555,23 +558,33 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // Health check
+    // 1. Health check
     if (url.pathname === '/api/health') {
       return new Response(JSON.stringify({ status: 'ok', service: 'Roomy Cloudflare Worker' }), {
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
-    // WebSocket / Room route: /api/room/:roomId/ws or /ws/:roomId
-    const match = url.pathname.match(/\/(?:api\/room|ws)\/([a-zA-Z0-9_-]+)/);
-    const roomId = match ? match[1] : url.searchParams.get('roomId') || '1234';
+    // 2. WebSocket & Real-time Room routes (e.g. /api/room/:roomId/ws or /ws/:roomId)
+    const isWebSocket = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
+    const isRoomApi = url.pathname.startsWith('/api/room') || url.pathname.startsWith('/ws');
 
-    if (env.ROOM_DO) {
-      const id = env.ROOM_DO.idFromName(roomId);
-      const roomDO = env.ROOM_DO.get(id);
-      return roomDO.fetch(request);
+    if (isWebSocket || isRoomApi) {
+      const match = url.pathname.match(/\/(?:api\/room|ws)\/([a-zA-Z0-9_-]+)/);
+      const roomId = match ? match[1] : url.searchParams.get('roomId') || '1234';
+
+      if (env.ROOM_DO) {
+        const id = env.ROOM_DO.idFromName(roomId);
+        const roomDO = env.ROOM_DO.get(id);
+        return roomDO.fetch(request);
+      }
     }
 
-    return new Response('Roomy Real-Time Cloudflare Worker Active', { status: 200 });
+    // 3. Serve Frontend React Web App & Static Assets
+    if (env.ASSETS) {
+      return env.ASSETS.fetch(request);
+    }
+
+    return new Response('Roomy Web App is running.', { status: 200 });
   }
 };
