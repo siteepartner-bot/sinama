@@ -1,0 +1,6 @@
+{
+  "name": "Roomy",
+  "description": "پلتفرم واچ پارتی حرفه‌ای برای تماشای همزمان ویدیو و گفتگو با دوستان",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
