@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AlertTriangle, ArrowRight, Film, Loader2, Sparkles, User, UserPlus } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Film, Loader2, User, UserPlus, Sparkles } from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
 import { RoomHeader } from './RoomHeader';
 import { VideoPlayer } from './VideoPlayer';
@@ -15,6 +15,7 @@ export function RoomPage() {
     currentUser,
     isLoading,
     error,
+    pendingRoomId,
     setView,
     joinDirectly,
     clearError
@@ -59,63 +60,11 @@ export function RoomPage() {
     );
   }
 
-  // 2. Error State (e.g. Room Not Found or Expired)
-  if (error || !roomState) {
-    return (
-      <div className="flex items-center justify-center min-h-[80vh] px-4" id="room-error-state">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-md p-8 rounded-2xl border border-zinc-800 bg-[#12141c] text-center shadow-2xl"
-        >
-          <div className="inline-flex p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-rose-400 mb-5">
-            <AlertTriangle className="h-8 w-8" />
-          </div>
-          <h2 className="text-xl font-bold text-zinc-100 mb-2">اتاق یافت نشد</h2>
-          <p className="text-sm text-zinc-400 leading-relaxed mb-8">
-            {error || 'این اتاق وجود ندارد یا منقضی شده است.'}
-          </p>
-
-          <div className="flex flex-col gap-3">
-            <button
-              onClick={() => {
-                clearError();
-                setView('create-room');
-              }}
-              className="w-full py-3 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl transition-all cursor-pointer shadow-lg shadow-rose-500/15"
-              id="btn-error-create-room"
-            >
-              ساخت یک اتاق جدید
-            </button>
-            <button
-              onClick={() => {
-                clearError();
-                setView('join-room');
-              }}
-              className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold rounded-xl border border-zinc-700 transition-all cursor-pointer"
-              id="btn-error-join-room"
-            >
-              ورود با کد دیگر
-            </button>
-            <button
-              onClick={() => {
-                clearError();
-                setView('home');
-              }}
-              className="flex items-center justify-center gap-2 text-zinc-400 hover:text-zinc-200 text-sm mt-2 transition-colors cursor-pointer"
-              id="btn-error-back-home"
-            >
-              <ArrowRight className="h-4 w-4" />
-              <span>بازگشت به صفحه اصلی</span>
-            </button>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
-
-  // 3. Direct Invitation Entry Prompt (For users visiting via shared URL who haven't entered their name yet)
+  // 2. Direct Invitation or Activation Entry Prompt (when user visits a room URL but hasn't entered their name yet)
   if (!currentUser) {
+    const targetCode = roomState?.roomId || pendingRoomId || '1234';
+    const roomTitle = roomState?.roomName || `اتاق شماره ${targetCode}`;
+
     const handleDirectJoinSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
       if (!directUserName.trim()) {
@@ -125,7 +74,10 @@ export function RoomPage() {
       setDirectJoinError('');
       setIsJoiningDirectly(true);
       try {
-        await joinDirectly(directUserName.trim());
+        const success = await joinDirectly(directUserName.trim());
+        if (!success) {
+          setDirectJoinError('خطا در ورود به اتاق، لطفاً مجدداً تلاش کنید.');
+        }
       } catch (err: unknown) {
         setDirectJoinError(err instanceof Error ? err.message : 'خطا در ورود به اتاق');
       } finally {
@@ -145,15 +97,15 @@ export function RoomPage() {
               <UserPlus className="h-6 w-6" />
             </div>
             <div>
-              <span className="text-[11px] font-bold text-rose-400 bg-rose-500/10 px-2.5 py-0.5 rounded-full border border-rose-500/20">
-                دعوت به تماشای دسته جمعی
+              <span className="text-[11px] font-bold text-rose-400 bg-rose-500/10 px-2.5 py-0.5 rounded-full border border-rose-500/20 font-mono">
+                کد اتاق: {targetCode}
               </span>
-              <h2 className="text-xl font-bold text-zinc-100 mt-1">{roomState.roomName}</h2>
+              <h2 className="text-xl font-bold text-zinc-100 mt-1">{roomTitle}</h2>
             </div>
           </div>
 
           <p className="text-sm text-zinc-300 mb-6 leading-relaxed bg-zinc-900/60 p-3.5 rounded-xl border border-zinc-800">
-            شما به این اتاق دعوت شده‌اید. برای ورود به واچ پارتی و مشاهده فیلم با دوستان، نام خود را مشخص کنید.
+            برای ورود به این سالن تماشا و هماهنگی پخش فیلم با دوستان، لطفاً نام یا نام مستعار خود را وارد کنید.
           </p>
 
           <form onSubmit={handleDirectJoinSubmit} className="space-y-4">
@@ -200,10 +152,90 @@ export function RoomPage() {
                   <span>در حال ورود...</span>
                 </>
               ) : (
-                <span>ورود به سالن تماشا</span>
+                <>
+                  <Sparkles className="h-4 w-4" />
+                  <span>ورود به سالن تماشا</span>
+                </>
               )}
             </button>
           </form>
+
+          <div className="mt-6 pt-4 border-t border-zinc-800/80 flex items-center justify-between text-xs text-zinc-400">
+            <button
+              onClick={() => {
+                clearError();
+                setView('join-room');
+              }}
+              className="hover:text-zinc-200 transition-colors cursor-pointer"
+            >
+              ورود با کد دیگر
+            </button>
+            <button
+              onClick={() => {
+                clearError();
+                setView('home');
+              }}
+              className="flex items-center gap-1 hover:text-zinc-200 transition-colors cursor-pointer"
+            >
+              <ArrowRight className="h-3 w-3" />
+              <span>صفحه اصلی</span>
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // 3. Fallback error state if something went wrong
+  if (error || !roomState) {
+    return (
+      <div className="flex items-center justify-center min-h-[80vh] px-4" id="room-error-state">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="w-full max-w-md p-8 rounded-2xl border border-zinc-800 bg-[#12141c] text-center shadow-2xl"
+        >
+          <div className="inline-flex p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-rose-400 mb-5">
+            <AlertTriangle className="h-8 w-8" />
+          </div>
+          <h2 className="text-xl font-bold text-zinc-100 mb-2">عدم دسترسی به اتاق</h2>
+          <p className="text-sm text-zinc-400 leading-relaxed mb-8">
+            {error || 'مشکلی در اتصال به این اتاق پیش آمد.'}
+          </p>
+
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={() => {
+                clearError();
+                setView('create-room');
+              }}
+              className="w-full py-3 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl transition-all cursor-pointer shadow-lg shadow-rose-500/15"
+              id="btn-error-create-room"
+            >
+              ساخت اتاق ۴ رقمی جدید
+            </button>
+            <button
+              onClick={() => {
+                clearError();
+                setView('join-room');
+              }}
+              className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold rounded-xl border border-zinc-700 transition-all cursor-pointer"
+              id="btn-error-join-room"
+            >
+              ورود با کد دیگر
+            </button>
+            <button
+              onClick={() => {
+                clearError();
+                setView('home');
+              }}
+              className="flex items-center justify-center gap-2 text-zinc-400 hover:text-zinc-200 text-sm mt-2 transition-colors cursor-pointer"
+              id="btn-error-back-home"
+            >
+              <ArrowRight className="h-4 w-4" />
+              <span>بازگشت به صفحه اصلی</span>
+            </button>
+          </div>
         </motion.div>
       </div>
     );

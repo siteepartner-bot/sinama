@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { ArrowRight, Film, Sparkles, User, Loader2 } from 'lucide-react';
+import { ArrowRight, Film, Sparkles, User, Key, Loader2 } from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
 
 export function CreateRoom() {
   const { createRoom, setView, isLoading } = useRoom();
   const [userName, setUserName] = useState('');
   const [roomName, setRoomName] = useState('');
+  const [customCode, setCustomCode] = useState('');
   const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -18,7 +19,7 @@ export function CreateRoom() {
     setError('');
 
     try {
-      await createRoom(userName.trim(), roomName.trim());
+      await createRoom(userName.trim(), roomName.trim(), customCode.trim() || undefined);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'خطا در ایجاد اتاق';
       setError(msg);
@@ -49,7 +50,7 @@ export function CreateRoom() {
           </div>
           <div>
             <h2 className="text-2xl font-bold text-zinc-100">ساخت اتاق واچ پارتی</h2>
-            <p className="text-xs text-zinc-400 mt-1">شناسه یکتای اتاق تولید شده و شما میزبان (Host) خواهید بود.</p>
+            <p className="text-xs text-zinc-400 mt-1">شناسه ۴ رقمی یکتا تولید شده و شما میزبان (Host) خواهید بود.</p>
           </div>
         </div>
 
@@ -105,8 +106,29 @@ export function CreateRoom() {
                 disabled={isLoading}
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-zinc-300 mb-2">
+              کد ۴ رقمی دلخواه (اختیاری)
+            </label>
+            <div className="relative">
+              <span className="absolute inset-y-0 right-0 flex items-center pr-3.5 text-zinc-500 pointer-events-none">
+                <Key className="h-5 w-5" />
+              </span>
+              <input
+                type="text"
+                maxLength={4}
+                value={customCode}
+                onChange={(e) => setCustomCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="خودکار ۴ رقمی (مثال: 5821)"
+                className="w-full pr-10 pl-4 py-3 bg-zinc-900/50 border border-zinc-800 rounded-xl text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-rose-500 transition-colors text-right font-mono"
+                id="input-custom-room-code"
+                disabled={isLoading}
+              />
+            </div>
             <p className="text-[11px] text-zinc-500 mt-1.5">
-              در صورت خالی گذاشتن، نام اتاق به شکل «اتاق [نام شما]» ساخته خواهد شد.
+              در صورت خالی بودن، یک کد ۴ رقمی تصادفی و یکتا به صورت خودکار تولید خواهد شد.
             </p>
           </div>
 
@@ -121,7 +143,7 @@ export function CreateRoom() {
             {isLoading ? (
               <>
                 <Loader2 className="h-5 w-5 animate-spin" />
-                <span>در حال ایجاد اتاق و شناسه یکتا...</span>
+                <span>در حال ایجاد اتاق و شناسه ۴ رقمی...</span>
               </>
             ) : (
               <span>ایجاد اتاق و دریافت لینک</span>

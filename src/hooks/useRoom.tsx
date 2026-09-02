@@ -12,8 +12,8 @@ interface RoomContextType {
   error: string | null;
   pendingRoomId: string | null;
   clearError: () => void;
-  createRoom: (userName: string, roomName?: string) => Promise<string>;
-  joinRoom: (userName: string, roomId: string) => Promise<boolean>;
+  createRoom: (userName: string, roomName?: string, customRoomId?: string) => Promise<string>;
+  joinRoom: (userName: string, roomId: string, autoCreateIfNotFound?: boolean) => Promise<boolean>;
   joinDirectly: (userName: string) => Promise<boolean>;
   leaveRoom: () => Promise<void>;
   toggleMic: () => Promise<void>;
@@ -118,8 +118,9 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
       const room = await roomService.getRoom(roomId);
 
       if (!room) {
-        setError('این اتاق وجود ندارد یا منقضی شده است.');
-        setViewState('room'); // Let RoomPage display the "Room Not Found" error card
+        // Room doesn't exist yet, but we have the target 4-digit code
+        // Instead of fatal error, we allow entering a name to activate it or choose another code
+        setViewState('room');
         setIsLoading(false);
         return;
       }
@@ -138,7 +139,7 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
         // Room exists, but user needs to enter their name
         setCurrentRoom(room);
         setCurrentUser(null);
-        setViewState('room'); // RoomPage will show the friendly "Enter Name to Join" modal
+        setViewState('room');
       }
     } else if (pathParts[0] === 'create-room') {
       setViewState('create-room');
@@ -163,12 +164,12 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
   }, [handleUrlRoute]);
 
   // Create Room
-  const createRoom = async (userName: string, roomName?: string): Promise<string> => {
+  const createRoom = async (userName: string, roomName?: string, customRoomId?: string): Promise<string> => {
     try {
       setIsLoading(true);
       setError(null);
 
-      const { room, currentUser: user } = await roomService.createRoom(userName, roomName);
+      const { room, currentUser: user } = await roomService.createRoom(userName, roomName, customRoomId);
 
       setCurrentRoom(room);
       setCurrentUser(user);
@@ -188,12 +189,12 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Join Room by Code / ID
-  const joinRoom = async (userName: string, roomId: string): Promise<boolean> => {
+  const joinRoom = async (userName: string, roomId: string, autoCreateIfNotFound = true): Promise<boolean> => {
     try {
       setIsLoading(true);
       setError(null);
 
-      const { room, currentUser: user } = await roomService.joinRoom(roomId, userName);
+      const { room, currentUser: user } = await roomService.joinRoom(roomId, userName, autoCreateIfNotFound);
 
       setCurrentRoom(room);
       setCurrentUser(user);
@@ -212,14 +213,10 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Join directly for users who clicked a shared link
+  // Join directly for users who clicked a shared link or have pending room ID
   const joinDirectly = async (userName: string): Promise<boolean> => {
-    if (!pendingRoomId && !currentRoom?.roomId) {
-      setError('شناسه اتاق نامعتبر است.');
-      return false;
-    }
-    const targetRoomId = (currentRoom?.roomId || pendingRoomId)!;
-    return joinRoom(userName, targetRoomId);
+    const targetRoomId = currentRoom?.roomId || pendingRoomId || '1234';
+    return joinRoom(userName, targetRoomId, true);
   };
 
   // Leave Room

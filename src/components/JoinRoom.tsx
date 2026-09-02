@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { ArrowRight, UserPlus, User, Key, Loader2 } from 'lucide-react';
+import { ArrowRight, UserPlus, User, Key, Loader2, Sparkles } from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
 
 export function JoinRoom() {
@@ -30,18 +30,18 @@ export function JoinRoom() {
 
     let cleanCode = roomCode.trim();
     if (!cleanCode) {
-      setLocalError('لطفاً کد اتاق را وارد کنید.');
+      setLocalError('لطفاً کد ۴ رقمی اتاق را وارد کنید.');
       return;
     }
 
-    // If user pasted a full URL like https://domain.com/room/8Kx29LmP or /room/8Kx29LmP
+    // If user pasted a full URL like https://domain.com/room/1234 or /room/1234
     if (cleanCode.includes('/room/')) {
       const parts = cleanCode.split('/room/');
       cleanCode = parts[parts.length - 1].split('?')[0].split('#')[0].trim();
     }
 
     setLocalError('');
-    await joinRoom(cleanName, cleanCode);
+    await joinRoom(cleanName, cleanCode, true);
   };
 
   const displayError = localError || globalError;
@@ -73,7 +73,7 @@ export function JoinRoom() {
           </div>
           <div>
             <h2 className="text-2xl font-bold text-zinc-100">ورود به اتاق واچ پارتی</h2>
-            <p className="text-xs text-zinc-400 mt-1">با وارد کردن کد اختصاصی یا لینک اتاق به جمع دوستان بپیوندید.</p>
+            <p className="text-xs text-zinc-400 mt-1">با وارد کردن کد ۴ رقمی اختصاصی به جمع دوستان بپیوندید.</p>
           </div>
         </div>
 
@@ -114,9 +114,20 @@ export function JoinRoom() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-zinc-300 mb-2">
-              کد یا لینک اتاق <span className="text-rose-500">*</span>
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-sm font-medium text-zinc-300">
+                کد ۴ رقمی یا لینک اتاق <span className="text-rose-500">*</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setRoomCode('1234')}
+                className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 cursor-pointer transition-colors"
+                title="استفاده از اتاق پیش‌فرض"
+              >
+                <Sparkles className="h-3 w-3" />
+                <span>کد تستی: ۱۲۳۴</span>
+              </button>
+            </div>
             <div className="relative">
               <span className="absolute inset-y-0 right-0 flex items-center pr-3.5 text-zinc-500 pointer-events-none">
                 <Key className="h-5 w-5" />
@@ -124,12 +135,13 @@ export function JoinRoom() {
               <input
                 type="text"
                 value={roomCode}
+                maxLength={20}
                 onChange={(e) => {
                   setRoomCode(e.target.value);
                   if (localError) setLocalError('');
                 }}
-                placeholder="مثال: 8Kx29LmP یا لینک کامل"
-                className="w-full pr-10 pl-4 py-3 bg-zinc-900/50 border border-zinc-800 rounded-xl text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-rose-500 transition-colors text-right font-mono text-sm"
+                placeholder="مثال: 1234 یا ۴ رقم"
+                className="w-full pr-10 pl-4 py-3 bg-zinc-900/50 border border-zinc-800 rounded-xl text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-rose-500 transition-colors text-right font-mono text-base tracking-wider"
                 id="input-join-room-code"
                 disabled={isLoading}
                 required
@@ -148,7 +160,7 @@ export function JoinRoom() {
             {isLoading ? (
               <>
                 <Loader2 className="h-5 w-5 animate-spin" />
-                <span>در حال بررسی اتاق و اتصال...</span>
+                <span>در حال بررسی و ورود...</span>
               </>
             ) : (
               <span>ورود به اتاق</span>

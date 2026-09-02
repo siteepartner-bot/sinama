@@ -7,9 +7,9 @@ import { Room, RoomUser, MediaState, ChatMessage } from '../types';
 export interface IRoomService {
   generateRoomId(): string;
   generateUserId(): string;
-  createRoom(hostName: string, roomName?: string): Promise<{ room: Room; currentUser: RoomUser }>;
+  createRoom(hostName: string, roomName?: string, customRoomId?: string): Promise<{ room: Room; currentUser: RoomUser }>;
   getRoom(roomId: string): Promise<Room | null>;
-  joinRoom(roomId: string, userName: string): Promise<{ room: Room; currentUser: RoomUser }>;
+  joinRoom(roomId: string, userName: string, autoCreateIfNotFound?: boolean): Promise<{ room: Room; currentUser: RoomUser }>;
   leaveRoom(roomId: string, userId: string): Promise<void>;
   updateUserMedia(
     roomId: string,
@@ -61,17 +61,22 @@ class LocalDurableRoomService implements IRoomService {
   private listeners: Map<string, Set<(room: Room, messages: ChatMessage[]) => void>> = new Map();
 
   /**
-   * Generates a cryptographically secure, clean 8-character alphanumeric Room ID.
-   * e.g., '8Kx29LmP' or '7f82a91c'
+   * Generates a 4-digit numeric Room ID (e.g., 4829, 1234, 8591)
    */
   generateRoomId(): string {
-    const chars = '23456789abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ';
-    const array = new Uint8Array(8);
-    crypto.getRandomValues(array);
+    const existingRooms = this.getRoomsMap();
     let id = '';
-    for (let i = 0; i < 8; i++) {
-      id += chars[array[i] % chars.length];
-    }
+    let attempts = 0;
+    
+    // Generate a 4-digit number between 1000 and 9999
+    do {
+      const array = new Uint32Array(1);
+      crypto.getRandomValues(array);
+      const num = 1000 + (array[0] % 9000);
+      id = num.toString();
+      attempts++;
+    } while (existingRooms[id] && attempts < 100);
+
     return id;
   }
 
@@ -89,7 +94,58 @@ class LocalDurableRoomService implements IRoomService {
   private getRoomsMap(): Record<string, Room> {
     try {
       const data = localStorage.getItem(ROOMS_KEY);
-      return data ? JSON.parse(data) : {};
+      if (data) {
+        return JSON.parse(data);
+      }
+      
+      // Default initial demo room (Code: 1234)
+      const defaultRoomId = '1234';
+      const defaultHostId = 'usr_demo_host';
+      const defaultRoom: Room = {
+        roomId: defaultRoomId,
+        roomName: 'اتاق عمومی واچ‌پارتی',
+        hostId: defaultHostId,
+        createdAt: Date.now() - 3600000,
+        users: [
+          {
+            userId: defaultHostId,
+            name: 'میزبان اتاق',
+            joinedAt: Date.now() - 3600000,
+            isHost: true,
+            isOnline: true,
+            micEnabled: true,
+            cameraEnabled: false,
+            screenSharingEnabled: false
+          }
+        ],
+        mediaState: {
+          sourceType: 'direct',
+          sourceUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+          title: 'Big Buck Bunny (ویدیوی نمونه)',
+          isPlaying: false,
+          currentTime: 0,
+          duration: 596,
+          quality: '1080p'
+        }
+      };
+
+      const initialRooms: Record<string, Room> = {
+        [defaultRoomId]: defaultRoom
+      };
+
+      this.saveRoomsMap(initialRooms);
+      this.saveMessagesForRoom(defaultRoomId, [
+        {
+          id: 'msg_welcome_1234',
+          senderId: 'system',
+          senderName: 'سیستم',
+          text: 'به اتاق عمومی واچ‌پارتی (کد ۱۲۳۴) خوش آمدید!',
+          timestamp: getPersianTimeStr(),
+          isSystem: true
+        }
+      ]);
+
+      return initialRooms;
     } catch {
       return {};
     }
@@ -154,13 +210,16 @@ class LocalDurableRoomService implements IRoomService {
 
   // --- Public API Methods ---
 
-  async createRoom(hostName: string, roomName?: string): Promise<{ room: Room; currentUser: RoomUser }> {
+  async createRoom(hostName: string, roomName?: string, customRoomId?: string): Promise<{ room: Room; currentUser: RoomUser }> {
     const cleanHostName = hostName.trim();
     if (!cleanHostName) {
       throw new Error('لطفاً نام خود را وارد کنید.');
     }
 
-    const roomId = this.generateRoomId();
+    const roomId = customRoomId && customRoomId.trim().length > 0
+      ? customRoomId.trim()
+      : this.generateRoomId();
+
     const hostId = this.generateUserId();
     const cleanRoomName = (roomName && roomName.trim()) ? roomName.trim() : `اتاق ${cleanHostName}`;
 
@@ -188,7 +247,7 @@ class LocalDurableRoomService implements IRoomService {
       id: 'msg_init_' + Date.now(),
       senderId: 'system',
       senderName: 'سیستم',
-      text: `اتاق «${cleanRoomName}» توسط ${cleanHostName} با موفقیت ساخته شد.`,
+      text: `اتاق «${cleanRoomName}» (کد ${roomId}) توسط ${cleanHostName} با موفقیت ساخته شد.`,
       timestamp: getPersianTimeStr(),
       isSystem: true
     };
@@ -212,7 +271,7 @@ class LocalDurableRoomService implements IRoomService {
     return rooms[roomId.trim()] || null;
   }
 
-  async joinRoom(roomId: string, userName: string): Promise<{ room: Room; currentUser: RoomUser }> {
+  async joinRoom(roomId: string, userName: string, autoCreateIfNotFound = false): Promise<{ room: Room; currentUser: RoomUser }> {
     const cleanRoomId = roomId.trim();
     const cleanUserName = userName.trim();
 
@@ -221,10 +280,14 @@ class LocalDurableRoomService implements IRoomService {
     }
 
     const rooms = this.getRoomsMap();
-    const room = rooms[cleanRoomId];
+    let room = rooms[cleanRoomId];
 
     if (!room) {
-      throw new Error('این اتاق وجود ندارد یا منقضی شده است.');
+      if (autoCreateIfNotFound) {
+        // Automatically create the room if it doesn't exist yet
+        return this.createRoom(cleanUserName, `اتاق ${cleanUserName}`, cleanRoomId);
+      }
+      throw new Error(`اتاق با کد ${cleanRoomId} وجود ندارد یا منقضی شده است.`);
     }
 
     // Check if we have an existing session in this room
