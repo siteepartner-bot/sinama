@@ -12,6 +12,17 @@ export interface RoomUser {
 // Backward compatibility alias for UI components
 export type Member = RoomUser;
 
+export type VideoSourceType = 'youtube' | 'aparat' | 'direct' | 'local' | 'none';
+
+export interface VideoSource {
+  type: VideoSourceType;
+  url: string;
+  videoId?: string;
+  fileName?: string;
+  title: string;
+  duration?: number;
+}
+
 export interface MediaState {
   sourceType: 'youtube' | 'aparat' | 'direct' | 'local' | null;
   sourceUrl: string;
@@ -20,6 +31,29 @@ export interface MediaState {
   currentTime: number; // in seconds
   duration: number; // in seconds
   quality: string; // e.g. '1080p', '720p', etc.
+  playbackRate?: number; // 0.5 to 2.0
+  fileName?: string;
+  videoId?: string;
+}
+
+// Phase 4 Sync Event Interfaces (Ready for WebSocket & Durable Objects sync in Phase 4)
+export type VideoSyncEventType =
+  | 'VIDEO_SOURCE_CHANGED'
+  | 'VIDEO_PLAY'
+  | 'VIDEO_PAUSE'
+  | 'VIDEO_SEEK'
+  | 'VIDEO_RATE_CHANGED'
+  | 'VIDEO_ENDED';
+
+export interface VideoSyncEvent {
+  type: VideoSyncEventType;
+  roomId: string;
+  senderId: string;
+  source?: VideoSource;
+  isPlaying?: boolean;
+  currentTime?: number;
+  playbackRate?: number;
+  timestamp: number;
 }
 
 // Backward compatibility alias
