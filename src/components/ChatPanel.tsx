@@ -4,7 +4,7 @@ import { MessageSquare, Send, Bell } from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
 
 export function ChatPanel() {
-  const { roomState, sendChatMessage } = useRoom();
+  const { roomState, currentUser, sendChatMessage } = useRoom();
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -15,11 +15,12 @@ export function ChatPanel() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [roomState.chatMessages]);
 
-  const handleSend = (e: React.FormEvent) => {
+  const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim()) return;
-    sendChatMessage(inputText);
+    const textToSend = inputText.trim();
     setInputText('');
+    await sendChatMessage(textToSend);
   };
 
   return (
@@ -33,8 +34,8 @@ export function ChatPanel() {
       {/* Messages Feed */}
       <div className="flex-1 overflow-y-auto space-y-3.5 pr-0.5 custom-scrollbar mb-4 flex flex-col">
         {roomState.chatMessages.map((msg) => {
-          const isMe = msg.senderId === roomState.currentUser?.id;
-          const isSystem = msg.senderId === 'system';
+          const isMe = currentUser ? msg.senderId === currentUser.userId : false;
+          const isSystem = msg.senderId === 'system' || msg.isSystem;
 
           if (isSystem) {
             return (
@@ -42,9 +43,9 @@ export function ChatPanel() {
                 key={msg.id}
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="flex items-center justify-center gap-1.5 self-center bg-zinc-900/50 border border-zinc-800/80 text-zinc-400 text-xs py-1.5 px-4 rounded-xl max-w-[90%]"
+                className="flex items-center justify-center gap-1.5 self-center bg-zinc-900/60 border border-zinc-800 text-zinc-400 text-xs py-1.5 px-4 rounded-xl max-w-[95%] text-center"
               >
-                <Bell className="h-3.5 w-3.5 text-rose-400" />
+                <Bell className="h-3.5 w-3.5 text-rose-400 shrink-0" />
                 <span>{msg.text}</span>
               </motion.div>
             );
@@ -58,19 +59,23 @@ export function ChatPanel() {
               className={`flex flex-col max-w-[85%] ${isMe ? 'self-end items-end' : 'self-start items-start'}`}
             >
               {/* Sender Name */}
-              <span className="text-[10px] text-zinc-500 mb-1 px-1">
+              <span className="text-[10px] text-zinc-400 mb-1 px-1 font-medium">
                 {isMe ? 'شما' : msg.senderName}
               </span>
 
               {/* Message Bubble */}
               <div
-                className={`py-2 px-3 rounded-2xl text-sm leading-relaxed ${isMe ? 'bg-rose-500 text-white rounded-tr-none' : 'bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-tl-none'}`}
+                className={`py-2 px-3.5 rounded-2xl text-sm leading-relaxed ${
+                  isMe
+                    ? 'bg-rose-500 text-white rounded-tr-none shadow-md shadow-rose-500/10'
+                    : 'bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-tl-none'
+                }`}
               >
-                <p className="whitespace-pre-wrap break-all">{msg.text}</p>
+                <p className="whitespace-pre-wrap break-words">{msg.text}</p>
               </div>
 
               {/* Timestamp */}
-              <span className="text-[9px] text-zinc-600 mt-0.5 px-1 font-mono">
+              <span className="text-[9px] text-zinc-500 mt-0.5 px-1 font-mono">
                 {msg.timestamp}
               </span>
             </motion.div>
@@ -93,6 +98,7 @@ export function ChatPanel() {
           type="submit"
           className="p-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl transition-colors cursor-pointer"
           id="chat-send-btn"
+          title="ارسال پیام"
         >
           <Send className="h-4 w-4 -rotate-90" />
         </button>
