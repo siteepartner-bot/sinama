@@ -365,14 +365,18 @@ export class RealTimeClient {
     });
   }
 
-  public emitScreenShareStarted(): void {
+  public emitScreenShareStarted(payload?: { screenStreamId?: string }): void {
     if (!this.roomId || !this.currentUser) return;
-    console.log('[SCREEN SHARE STARTED SIGNAL SENT]', { userId: this.currentUser.userId });
+    console.log('[SCREEN SHARE STARTED SIGNAL SENT]', { userId: this.currentUser.userId, payload });
     this.sendMessage({
       type: 'SCREEN_SHARE_STARTED',
       roomId: this.roomId,
       senderId: this.currentUser.userId,
       senderName: this.currentUser.name,
+      payload: {
+        screenStreamId: payload?.screenStreamId,
+        timestamp: Date.now()
+      },
       timestamp: Date.now()
     });
   }

@@ -722,6 +722,7 @@ export class RoomDurableObject {
             roomId: this.roomId,
             senderId: message.senderId,
             senderName: message.senderName,
+            payload: (message as any).payload,
             timestamp: now
           },
           senderWs
@@ -747,6 +748,7 @@ export class RoomDurableObject {
             roomId: this.roomId,
             senderId: message.senderId,
             senderName: message.senderName,
+            payload: (message as any).payload,
             timestamp: now
           },
           senderWs

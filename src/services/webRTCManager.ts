@@ -40,6 +40,8 @@ export class WebRTCManager {
   private iceCandidatesQueue: Map<string, RTCIceCandidateInit[]> = new Map();
   private makingOffer: Map<string, boolean> = new Map();
   private isSettingRemoteAnswerPending: Map<string, boolean> = new Map();
+  private remotePeerScreenStreamIds: Map<string, string> = new Map();
+  private negotiationPending: Map<string, boolean> = new Map();
 
   private isInCall = false;
   private localMicEnabled = false;
@@ -168,10 +170,10 @@ export class WebRTCManager {
         // If local user is in call or screen sharing, connect to joining peer
         if (this.isInCall || this.isScreenSharing) {
           console.log('[CONNECTING TO NEW PEER]', { remoteUserId });
-          const pc = this.getOrCreatePeerConnection(remoteUserId, joinMsg.senderName);
-          // If we are the impolite peer or the caller, we can proactively create offer
+          this.getOrCreatePeerConnection(remoteUserId, joinMsg.senderName);
+          // If we are the impolite peer or caller, request negotiation
           if (!this.isPolitePeer(remoteUserId)) {
-            await this.initiateOffer(remoteUserId, pc);
+            await this.requestNegotiation(remoteUserId);
           }
         }
         break;
@@ -195,7 +197,7 @@ export class WebRTCManager {
       case 'WEBRTC_OFFER': {
         const offerMsg = message as WebRTCOfferMessage;
         if (offerMsg.toUserId !== currentUser.userId) return;
-        console.log('[OFFER RECEIVED]', { fromUserId: offerMsg.senderId });
+        console.log('[WEBRTC DEBUG] offer received', offerMsg.senderId);
         await this.handleOffer(offerMsg.senderId, offerMsg.payload, offerMsg.senderName);
         break;
       }
@@ -203,7 +205,7 @@ export class WebRTCManager {
       case 'WEBRTC_ANSWER': {
         const answerMsg = message as WebRTCAnswerMessage;
         if (answerMsg.toUserId !== currentUser.userId) return;
-        console.log('[ANSWER RECEIVED]', { fromUserId: answerMsg.senderId });
+        console.log('[WEBRTC DEBUG] answer received', answerMsg.senderId);
         await this.handleAnswer(answerMsg.senderId, answerMsg.payload);
         break;
       }
@@ -239,6 +241,7 @@ export class WebRTCManager {
           peer.screenSharing = mediaMsg.payload.screenSharingEnabled;
           if (!mediaMsg.payload.screenSharingEnabled) {
             peer.screenStream = undefined;
+            this.remotePeerScreenStreamIds.delete(remoteUserId);
             const st = this.remoteScreenStreams.get(remoteUserId);
             if (st) {
               st.getTracks().forEach((t) => t.stop());
@@ -255,8 +258,13 @@ export class WebRTCManager {
 
       case 'SCREEN_SHARE_STARTED': {
         const remoteUserId = message.senderId;
-        console.log('[SCREEN SHARE STARTED SIGNAL RECEIVED]', { remoteUserId });
+        const screenStreamId = (message as any).payload?.screenStreamId;
+        console.log('[SCREEN SHARE STARTED SIGNAL RECEIVED]', { remoteUserId, screenStreamId });
         if (remoteUserId === currentUser.userId) return;
+
+        if (screenStreamId) {
+          this.remotePeerScreenStreamIds.set(remoteUserId, screenStreamId);
+        }
 
         const peer = this.peerMediaStates.get(remoteUserId) || {
           userId: remoteUserId,
@@ -268,15 +276,26 @@ export class WebRTCManager {
         };
         peer.screenSharing = true;
 
-        // Check if a screen stream was already received in peerConnections
+        // 1. If cameraStream was mistakenly assigned the screen stream before this signal arrived, migrate it
+        const existingCamera = this.remoteStreams.get(remoteUserId);
+        if (existingCamera && screenStreamId && existingCamera.id === screenStreamId) {
+          console.log('[SCREEN DEBUG] Migrating misrouted screen stream from camera to screen stream:', screenStreamId);
+          this.remoteScreenStreams.set(remoteUserId, existingCamera);
+          this.remoteStreams.delete(remoteUserId);
+          peer.screenStream = existingCamera;
+          peer.stream = undefined;
+          this.notifyRemoteStreams();
+        }
+
+        // 2. Check if a screen track is already present in RTCRtpReceivers
         const pc = this.peerConnections.get(remoteUserId);
-        const cameraStream = this.remoteStreams.get(remoteUserId);
         if (pc) {
+          const cameraStream = this.remoteStreams.get(remoteUserId);
           pc.getReceivers().forEach((receiver) => {
             if (receiver.track && receiver.track.kind === 'video') {
-              // If cameraStream doesn't have this track, it's the screen track!
-              if (!cameraStream || !cameraStream.getVideoTracks().some((t) => t.id === receiver.track.id)) {
-                console.log('[SCREEN] Found screen track in receivers during SCREEN_SHARE_STARTED:', receiver.track.id);
+              const isCameraTrack = cameraStream && cameraStream.getVideoTracks().some((t) => t.id === receiver.track.id);
+              if (!isCameraTrack) {
+                console.log('[SCREEN DEBUG] Found screen track in receivers during SCREEN_SHARE_STARTED:', receiver.track.id);
                 let screenStream = this.remoteScreenStreams.get(remoteUserId);
                 if (!screenStream) {
                   screenStream = new MediaStream([receiver.track]);
@@ -301,6 +320,7 @@ export class WebRTCManager {
         console.log('[SCREEN SHARE STOPPED SIGNAL RECEIVED]', { remoteUserId });
         if (remoteUserId === currentUser.userId) return;
 
+        this.remotePeerScreenStreamIds.delete(remoteUserId);
         const peer = this.peerMediaStates.get(remoteUserId);
         if (peer) {
           peer.screenSharing = false;
@@ -393,56 +413,88 @@ export class WebRTCManager {
       }
     };
 
-    // 3. Handle Remote Track
+    // 3. Handle Remote Track (Step 5, 6, 7)
     pc.ontrack = (event) => {
-      console.log('[SCREEN] Remote track received:', {
-        fromUserId: remoteUserId,
+      console.log('[REMOTE TRACK RECEIVED]', {
+        peerId: remoteUserId,
         trackId: event.track.id,
         kind: event.track.kind,
-        readyState: event.track.readyState,
-        streamId: event.streams[0]?.id
+        label: event.track.label,
+        streams: event.streams.map((stream) => ({
+          id: stream.id,
+          tracks: stream.getTracks().map((track) => ({
+            id: track.id,
+            kind: track.kind,
+            label: track.label
+          }))
+        }))
       });
 
       const incomingStream = event.streams[0] || new MediaStream([event.track]);
       const cameraStream = this.remoteStreams.get(remoteUserId);
       const peerState = this.peerMediaStates.get(remoteUserId);
+      const knownScreenStreamId = this.remotePeerScreenStreamIds.get(remoteUserId);
+      const existingScreenStream = this.remoteScreenStreams.get(remoteUserId);
 
       // Distinguish screen share track vs camera/mic track
+      let isScreenShare = false;
+
       if (event.track.kind === 'video') {
-        const isScreenTrack =
-          (peerState?.screenSharing === true && (!cameraStream || incomingStream.id !== cameraStream.id || !peerState.cameraEnabled)) ||
-          (cameraStream && cameraStream.getVideoTracks().length > 0 && !cameraStream.getVideoTracks().some((t) => t.id === event.track.id)) ||
-          (cameraStream && incomingStream.id !== cameraStream.id);
-
-        if (isScreenTrack) {
-          let screenStream = this.remoteScreenStreams.get(remoteUserId);
-          if (!screenStream || screenStream.id !== incomingStream.id) {
-            screenStream = incomingStream;
-            this.remoteScreenStreams.set(remoteUserId, screenStream);
-          } else {
-            if (!screenStream.getTracks().some((t) => t.id === event.track.id)) {
-              screenStream.addTrack(event.track);
-            }
-          }
-
-          if (peerState) {
-            peerState.screenStream = screenStream;
-            peerState.screenSharing = true;
-          }
-
-          console.log('[SCREEN] Remote stream attached for peer:', remoteUserId, {
-            screenStreamId: screenStream.id,
-            videoTrackCount: screenStream.getVideoTracks().length,
-            trackId: event.track.id
-          });
-
-          this.notifyRemoteScreenStreams();
-          this.notifyPeerStates();
-          return;
+        // 1. Matches known screen stream ID transmitted via signaling
+        if (knownScreenStreamId && incomingStream.id === knownScreenStreamId) {
+          isScreenShare = true;
+        }
+        // 2. Peer is marked as screen sharing and incoming stream differs from camera stream
+        else if (peerState?.screenSharing && (!cameraStream || incomingStream.id !== cameraStream.id)) {
+          isScreenShare = true;
+        }
+        // 3. Camera stream already exists and has a video track, incoming stream is a separate stream
+        else if (cameraStream && cameraStream.getVideoTracks().length > 0 && incomingStream.id !== cameraStream.id) {
+          isScreenShare = true;
+        }
+        // 4. Track label or stream label explicitly indicates screen share
+        else if (event.track.label.toLowerCase().includes('screen') || incomingStream.id.toLowerCase().includes('screen')) {
+          isScreenShare = true;
+        }
+      } else if (event.track.kind === 'audio') {
+        // Handle screen share audio if present
+        if (knownScreenStreamId && incomingStream.id === knownScreenStreamId) {
+          isScreenShare = true;
+        } else if (existingScreenStream && incomingStream.id === existingScreenStream.id) {
+          isScreenShare = true;
         }
       }
 
+      if (isScreenShare) {
+        console.log('[SCREEN DEBUG] Route track to SCREEN STREAM:', remoteUserId, event.track.id, event.track.kind);
+        let screenStream = this.remoteScreenStreams.get(remoteUserId);
+        if (!screenStream || screenStream.id !== incomingStream.id) {
+          screenStream = incomingStream;
+          this.remoteScreenStreams.set(remoteUserId, screenStream);
+        } else {
+          if (!screenStream.getTracks().some((t) => t.id === event.track.id)) {
+            screenStream.addTrack(event.track);
+          }
+        }
+
+        if (peerState) {
+          peerState.screenStream = screenStream;
+          peerState.screenSharing = true;
+        }
+
+        console.log('[SCREEN DEBUG] Remote screen stream attached:', remoteUserId, {
+          streamId: screenStream.id,
+          videoTracks: screenStream.getVideoTracks().length,
+          audioTracks: screenStream.getAudioTracks().length
+        });
+
+        this.notifyRemoteScreenStreams();
+        this.notifyPeerStates();
+        return;
+      }
+
       // Default: Camera / Microphone Stream
+      console.log('[SCREEN DEBUG] Route track to CAMERA/MIC STREAM:', remoteUserId, event.track.id, event.track.kind);
       let remoteStream = cameraStream;
       if (!remoteStream) {
         remoteStream = incomingStream;
@@ -461,26 +513,12 @@ export class WebRTCManager {
       this.notifyPeerStates();
     };
 
-    // 4. Handle Negotiation Needed (Polite / Impolite collision avoidance)
+    // 4. Handle Negotiation Needed with centralized queue (Step 3 & Step 8)
     pc.onnegotiationneeded = async () => {
-      try {
-        console.log('[SCREEN] Negotiation needed event for peer:', remoteUserId);
-        if (pc!.signalingState !== 'stable') {
-          console.log('[SCREEN] Negotiation needed ignored, signalingState is:', pc!.signalingState);
-          return;
-        }
-        this.makingOffer.set(remoteUserId, true);
-        const offer = await pc!.createOffer();
-        await pc!.setLocalDescription(offer);
-        console.log('[SCREEN] Offer sent from negotiationneeded to:', remoteUserId);
-        if (pc!.localDescription) {
-          realTimeClient.emitWebRTCOffer(remoteUserId, pc!.localDescription);
-        }
-      } catch (err) {
-        console.error('[SCREEN] Offer generation failed on negotiationneeded for:', remoteUserId, err);
-      } finally {
-        this.makingOffer.set(remoteUserId, false);
-      }
+      console.log('[WEBRTC DEBUG] negotiationneeded', remoteUserId, {
+        signalingState: pc!.signalingState
+      });
+      await this.requestNegotiation(remoteUserId);
     };
 
     // 5. Handle Connection State Changes
@@ -528,14 +566,60 @@ export class WebRTCManager {
     }
   }
 
-  private async initiateOffer(remoteUserId: string, pc: RTCPeerConnection): Promise<void> {
+  /**
+   * Safe, centralized negotiation trigger and queue manager (Step 3, 4, 8).
+   * Ensures no negotiation needed event is dropped due to makingOffer or non-stable state.
+   */
+  public async requestNegotiation(remoteUserId: string): Promise<void> {
+    const pc = this.peerConnections.get(remoteUserId);
+    if (!pc || pc.signalingState === 'closed') return;
+
+    console.log('[WEBRTC DEBUG] requestNegotiation called', remoteUserId, {
+      signalingState: pc.signalingState,
+      makingOffer: !!this.makingOffer.get(remoteUserId),
+      isSettingRemoteAnswerPending: !!this.isSettingRemoteAnswerPending.get(remoteUserId)
+    });
+
+    if (
+      pc.signalingState !== 'stable' ||
+      this.makingOffer.get(remoteUserId) ||
+      this.isSettingRemoteAnswerPending.get(remoteUserId)
+    ) {
+      console.log('[WEBRTC DEBUG] Queueing renegotiation for peer (not stable or operation in progress):', remoteUserId, {
+        signalingState: pc.signalingState
+      });
+      this.negotiationPending.set(remoteUserId, true);
+      return;
+    }
+
+    this.negotiationPending.set(remoteUserId, false);
+
     try {
       this.makingOffer.set(remoteUserId, true);
+      console.log('[WEBRTC DEBUG] creating offer', remoteUserId);
       const offer = await pc.createOffer();
+
+      if (pc.signalingState !== 'stable') {
+        console.log('[WEBRTC DEBUG] Signaling state changed during createOffer, queueing again:', remoteUserId, {
+          signalingState: pc.signalingState
+        });
+        this.negotiationPending.set(remoteUserId, true);
+        return;
+      }
+
+      const videoMLines = (offer.sdp?.match(/^m=video /gm) || []).length;
+      const audioMLines = (offer.sdp?.match(/^m=audio /gm) || []).length;
+      console.log(`[SDP DEBUG] offer video m-lines: ${videoMLines}, audio m-lines: ${audioMLines}`, remoteUserId);
+      console.log('[WEBRTC DEBUG] offer created', remoteUserId, offer.sdp);
+
       await pc.setLocalDescription(offer);
-      realTimeClient.emitWebRTCOffer(remoteUserId, pc.localDescription!);
+      console.log('[WEBRTC DEBUG] sending renegotiation offer', remoteUserId);
+
+      if (pc.localDescription) {
+        realTimeClient.emitWebRTCOffer(remoteUserId, pc.localDescription);
+      }
     } catch (err) {
-      console.error('[INITIATE OFFER ERROR]', err);
+      console.error('[WEBRTC DEBUG] offer creation failed for peer:', remoteUserId, err);
     } finally {
       this.makingOffer.set(remoteUserId, false);
     }
@@ -546,6 +630,7 @@ export class WebRTCManager {
     offer: RTCSessionDescriptionInit,
     senderName?: string
   ): Promise<void> {
+    console.log('[WEBRTC DEBUG] offer received', fromUserId);
     const pc = this.getOrCreatePeerConnection(fromUserId, senderName);
     const isPolite = this.isPolitePeer(fromUserId);
     const offerCollision =
@@ -567,12 +652,25 @@ export class WebRTCManager {
       } else {
         await pc.setRemoteDescription(offer);
       }
+      console.log('[WEBRTC DEBUG] remote description applied');
 
       await this.flushIceCandidatesQueue(fromUserId, pc);
 
       const answer = await pc.createAnswer();
+      const videoMLines = (answer.sdp?.match(/^m=video /gm) || []).length;
+      const audioMLines = (answer.sdp?.match(/^m=audio /gm) || []).length;
+      console.log(`[SDP DEBUG] answer video m-lines: ${videoMLines}, audio m-lines: ${audioMLines}`, fromUserId);
+      console.log('[WEBRTC DEBUG] answer created', fromUserId, answer.sdp);
+
       await pc.setLocalDescription(answer);
+      console.log('[WEBRTC DEBUG] sending answer', fromUserId);
       realTimeClient.emitWebRTCAnswer(fromUserId, pc.localDescription!);
+
+      // Check queued renegotiation after answering
+      if (this.negotiationPending.get(fromUserId)) {
+        console.log('[WEBRTC DEBUG] executing queued negotiation after handling offer:', fromUserId);
+        await this.requestNegotiation(fromUserId);
+      }
     } catch (err) {
       console.error('[HANDLE OFFER FAILED]', err);
     }
@@ -582,13 +680,21 @@ export class WebRTCManager {
     fromUserId: string,
     answer: RTCSessionDescriptionInit
   ): Promise<void> {
+    console.log('[WEBRTC DEBUG] answer received', fromUserId);
     const pc = this.peerConnections.get(fromUserId);
     if (!pc) return;
 
     try {
       this.isSettingRemoteAnswerPending.set(fromUserId, true);
       await pc.setRemoteDescription(answer);
+      console.log('[WEBRTC DEBUG] remote description (answer) applied');
       await this.flushIceCandidatesQueue(fromUserId, pc);
+
+      // Check queued renegotiation after answer applied and connection returned to stable
+      if (this.negotiationPending.get(fromUserId)) {
+        console.log('[WEBRTC DEBUG] executing queued negotiation after answer:', fromUserId);
+        await this.requestNegotiation(fromUserId);
+      }
     } catch (err) {
       console.error('[HANDLE ANSWER FAILED]', err);
     } finally {
@@ -856,18 +962,21 @@ export class WebRTCManager {
         });
       }
 
-      console.log('[SCREEN] Local stream created:', displayStream.id);
+      // Step 1: Debug local screen stream
+      console.log('[SCREEN DEBUG] stream created', {
+        streamId: displayStream.id,
+        tracks: displayStream.getTracks().map((track) => ({
+          id: track.id,
+          kind: track.kind,
+          label: track.label,
+          readyState: track.readyState
+        }))
+      });
 
       const screenVideoTrack = displayStream.getVideoTracks()[0];
       if (!screenVideoTrack) {
         throw new Error('هیچ تصویر ویدیویی از صفحه نمایش دریافت نشد.');
       }
-
-      console.log('[SCREEN] Video track:', {
-        id: screenVideoTrack.id,
-        kind: screenVideoTrack.kind,
-        readyState: screenVideoTrack.readyState
-      });
 
       this.localScreenStream = displayStream;
       this.isScreenSharing = true;
@@ -881,7 +990,8 @@ export class WebRTCManager {
       // Add screen tracks to all peer connections and initiate negotiation
       this.syncScreenTracksWithAllPeers();
 
-      realTimeClient.emitScreenShareStarted();
+      // Transmit screenStreamId to all peers via signaling
+      realTimeClient.emitScreenShareStarted({ screenStreamId: displayStream.id });
       realTimeClient.emitMediaStateChanged({
         micEnabled: this.localMicEnabled,
         cameraEnabled: this.localCameraEnabled,
@@ -909,7 +1019,7 @@ export class WebRTCManager {
   }
 
   /**
-   * Synchronizes local screen share tracks across all room peers.
+   * Synchronizes local screen share tracks across all room peers (Step 2 & Step 3).
    */
   public syncScreenTracksWithAllPeers(): void {
     if (!this.localScreenStream) return;
@@ -927,33 +1037,72 @@ export class WebRTCManager {
       if (userId && userId !== currentUserId) remoteUserIds.add(userId);
     });
 
-    console.log('[SCREEN] Synchronizing screen tracks with remote users count:', remoteUserIds.size);
+    console.log('[SCREEN DEBUG] Synchronizing screen tracks with remote users count:', remoteUserIds.size);
 
     remoteUserIds.forEach((remoteUserId) => {
       const pc = this.getOrCreatePeerConnection(remoteUserId);
       if (pc.signalingState === 'closed') return;
 
+      // Step 2: Debug peer state before adding screen track
+      console.log('[SCREEN DEBUG] peer', {
+        peerId: remoteUserId,
+        connectionState: pc.connectionState,
+        signalingState: pc.signalingState,
+        senders: pc.getSenders().map((sender) => ({
+          trackId: sender.track?.id,
+          kind: sender.track?.kind
+        })),
+        transceivers: pc.getTransceivers().map((t) => ({
+          mid: t.mid,
+          direction: t.direction,
+          currentDirection: t.currentDirection
+        }))
+      });
+
       const senders = pc.getSenders();
+      let tracksAdded = false;
 
       screenTracks.forEach((track) => {
         const alreadyAdded = senders.some((s) => s.track?.id === track.id);
         if (!alreadyAdded) {
           try {
-            console.log('[SCREEN] Adding screen track to peer:', remoteUserId);
+            console.log('[SCREEN DEBUG] Adding screen track to peer:', remoteUserId, track.id);
             const sender = pc.addTrack(track, this.localScreenStream!);
-            console.log('[SCREEN] Sender created for track:', sender.track?.id || track.id);
-
-            // Initiate renegotiation offer if stable
-            if (pc.signalingState === 'stable') {
-              this.initiateOffer(remoteUserId, pc);
-            }
+            tracksAdded = true;
+            console.log('[SCREEN DEBUG] sender added', {
+              peerId: remoteUserId,
+              senderTrackId: sender.track?.id
+            });
           } catch (err) {
-            console.warn('[SCREEN] Failed to add screen track to peer:', remoteUserId, err);
+            console.warn('[SCREEN DEBUG] Failed to add screen track to peer:', remoteUserId, err);
           }
         } else {
-          console.log('[SCREEN] Screen track already added to peer:', remoteUserId);
+          console.log('[SCREEN DEBUG] Screen track already added to peer:', remoteUserId);
         }
       });
+
+      // Verify screen sender exists
+      const screenVideoTrack = this.localScreenStream.getVideoTracks()[0];
+      if (screenVideoTrack) {
+        const hasScreenSender = pc.getSenders().some((sender) => sender.track?.id === screenVideoTrack.id);
+        console.log('[SCREEN DEBUG] screen sender exists:', hasScreenSender, { peerId: remoteUserId });
+      }
+
+      // Step 2 (after): Debug peer state after adding track
+      console.log('[SCREEN DEBUG] peer (after adding track)', {
+        peerId: remoteUserId,
+        connectionState: pc.connectionState,
+        signalingState: pc.signalingState,
+        senders: pc.getSenders().map((sender) => ({
+          trackId: sender.track?.id,
+          kind: sender.track?.kind
+        }))
+      });
+
+      // Request renegotiation cleanly using centralized queue (Step 3)
+      if (tracksAdded) {
+        this.requestNegotiation(remoteUserId);
+      }
     });
   }
 
@@ -973,19 +1122,22 @@ export class WebRTCManager {
         this.peerConnections.forEach((pc, remoteUserId) => {
           if (pc.signalingState === 'closed') return;
           const senders = pc.getSenders();
+          let tracksRemoved = false;
+
           senders.forEach((sender) => {
             if (sender.track && screenTrackIds.has(sender.track.id)) {
               try {
                 pc.removeTrack(sender);
-                console.log('[SCREEN] Removed screen track sender from peer:', remoteUserId);
+                tracksRemoved = true;
+                console.log('[SCREEN DEBUG] sender removed', { remoteUserId, trackId: sender.track?.id });
               } catch (err) {
                 console.warn('[SCREEN] Failed to remove screen track sender:', err);
               }
             }
           });
 
-          if (pc.signalingState === 'stable') {
-            this.initiateOffer(remoteUserId, pc);
+          if (tracksRemoved) {
+            this.requestNegotiation(remoteUserId);
           }
         });
 
@@ -1059,6 +1211,8 @@ export class WebRTCManager {
     this.iceCandidatesQueue.delete(remoteUserId);
     this.makingOffer.delete(remoteUserId);
     this.isSettingRemoteAnswerPending.delete(remoteUserId);
+    this.remotePeerScreenStreamIds.delete(remoteUserId);
+    this.negotiationPending.delete(remoteUserId);
     this.peerMediaStates.delete(remoteUserId);
 
     this.notifyRemoteStreams();
@@ -1125,6 +1279,8 @@ export class WebRTCManager {
     this.iceCandidatesQueue.clear();
     this.makingOffer.clear();
     this.isSettingRemoteAnswerPending.clear();
+    this.remotePeerScreenStreamIds.clear();
+    this.negotiationPending.clear();
     this.peerMediaStates.clear();
 
     this.notifyLocalStream();

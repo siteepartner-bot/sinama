@@ -105,12 +105,19 @@ export function ScreenSharePanel() {
   // Attach MediaStream to <video> tag
   useEffect(() => {
     if (videoRef.current && currentShare?.stream) {
-      videoRef.current.srcObject = currentShare.stream;
+      if (videoRef.current.srcObject !== currentShare.stream) {
+        videoRef.current.srcObject = currentShare.stream;
+      }
       videoRef.current.play().catch((err) => {
         console.warn('Screen share video auto-play failed:', err);
+        // If autoplay blocked, try playing muted
+        if (videoRef.current && !videoRef.current.muted) {
+          videoRef.current.muted = true;
+          videoRef.current.play().catch(() => {});
+        }
       });
     }
-  }, [currentShare]);
+  }, [currentShare?.stream, currentShare?.userId]);
 
   // Fullscreen event listener
   useEffect(() => {

@@ -187,6 +187,7 @@ export interface MediaStateChangedMessage extends BaseWsMessage {
 export interface ScreenShareStartedMessage extends BaseWsMessage {
   type: 'SCREEN_SHARE_STARTED';
   payload?: {
+    screenStreamId?: string;
     timestamp: number;
   };
 }
