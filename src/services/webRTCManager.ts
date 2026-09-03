@@ -15,6 +15,7 @@ import {
   MovieStreamSeekMessage
 } from '../types';
 import { realTimeClient } from './realtimeClient';
+import { roomService } from './roomService';
 
 export interface WebRTCManagerListeners {
   onLocalStreamChange?: (stream: MediaStream | null) => void;
@@ -200,8 +201,8 @@ export class WebRTCManager {
         this.peerMediaStates.set(remoteUserId, existingState);
         this.notifyPeerStates();
 
-        // If local user is in call or screen sharing, connect to joining peer
-        if (this.isInCall || this.isScreenSharing) {
+        // If local user is in call, screen sharing, or movie streaming, connect to joining peer
+        if (this.isInCall || this.isScreenSharing || this.isMovieStreaming) {
           console.log('[CONNECTING TO NEW PEER]', { remoteUserId });
           this.getOrCreatePeerConnection(remoteUserId, joinMsg.senderName);
           // If we are the impolite peer or caller, request negotiation
@@ -217,6 +218,22 @@ export class WebRTCManager {
         const remoteUserId = leaveMsg.senderId;
         console.log('[WEBRTC LEAVE RECEIVED]', { remoteUserId });
         this.closePeerConnection(remoteUserId);
+        break;
+      }
+
+      case 'USER_JOINED': {
+        const remoteUser = (message as any).user;
+        if (!remoteUser || remoteUser.userId === currentUser.userId) break;
+        const remoteUserId = remoteUser.userId;
+        console.log('[USER JOINED SIGNAL RECEIVED IN WEBRTC]', { remoteUserId, name: remoteUser.name });
+
+        if (this.isMovieStreaming && this.localMovieStream) {
+          console.log('[MOVIE] Connecting to new room member for live movie stream:', remoteUserId);
+          this.getOrCreatePeerConnection(remoteUserId, remoteUser.name);
+          if (!this.isPolitePeer(remoteUserId)) {
+            await this.requestNegotiation(remoteUserId);
+          }
+        }
         break;
       }
 
@@ -479,6 +496,9 @@ export class WebRTCManager {
         };
         peer.isMovieStreaming = true;
 
+        // Ensure peer connection with the movie streamer
+        const pc = this.getOrCreatePeerConnection(remoteUserId, movieMsg.senderName);
+
         // 1. Check if movie tracks were buffered before this signal arrived
         const buffered = this.bufferedMovieTracks.get(remoteUserId);
         if (buffered && buffered.length > 0) {
@@ -490,7 +510,6 @@ export class WebRTCManager {
         }
 
         // 2. Check peer connection receivers for any unrouted movie tracks
-        const pc = this.peerConnections.get(remoteUserId);
         if (pc) {
           pc.getReceivers().forEach((receiver) => {
             if (receiver.track && receiver.track.readyState === 'live') {
@@ -506,6 +525,11 @@ export class WebRTCManager {
               }
             }
           });
+        }
+
+        // Request negotiation if needed
+        if (!this.isPolitePeer(remoteUserId)) {
+          await this.requestNegotiation(remoteUserId);
         }
 
         this.peerMediaStates.set(remoteUserId, peer);
@@ -1655,22 +1679,51 @@ export class WebRTCManager {
         fileName
       };
 
-      // Broadcast tracks to all existing peer connections
+      // Collect target peers from roomService, peerConnections, and peerMediaStates
+      const roomMembers = roomService.getRoomUsers();
+      const targetPeers: Array<{ userId: string; name: string }> = [];
+
+      roomMembers.forEach((u) => {
+        if (u.userId !== currentUser?.userId && !targetPeers.some((p) => p.userId === u.userId)) {
+          targetPeers.push({ userId: u.userId, name: u.name });
+        }
+      });
+
+      this.peerMediaStates.forEach((state, peerId) => {
+        if (peerId !== currentUser?.userId && !targetPeers.some((p) => p.userId === peerId)) {
+          targetPeers.push({ userId: peerId, name: state.name });
+        }
+      });
+
+      this.peerConnections.forEach((_, peerId) => {
+        if (peerId !== currentUser?.userId && !targetPeers.some((p) => p.userId === peerId)) {
+          targetPeers.push({ userId: peerId, name: 'کاربر' });
+        }
+      });
+
+      console.log('[MOVIE] Broadcasting tracks to target peers:', targetPeers.map((p) => p.userId));
+
+      // Broadcast tracks to all peers
       const tracks = stream.getTracks();
-      for (const [peerId, pc] of this.peerConnections) {
+      for (const peer of targetPeers) {
+        const pc = this.getOrCreatePeerConnection(peer.userId, peer.name);
         tracks.forEach((track) => {
           try {
-            pc.addTrack(track, stream);
-            console.log('[MOVIE] Track added to peer:', peerId, {
-              kind: track.kind,
-              trackId: track.id,
-              readyState: track.readyState
-            });
+            const senders = pc.getSenders();
+            const existingSender = senders.find((s) => s.track && s.track.id === track.id);
+            if (!existingSender) {
+              pc.addTrack(track, stream);
+              console.log('[MOVIE] Track added to peer:', peer.userId, {
+                kind: track.kind,
+                trackId: track.id,
+                readyState: track.readyState
+              });
+            }
           } catch (err) {
-            console.warn('[MOVIE] Failed to add movie track to peer:', peerId, err);
+            console.warn('[MOVIE] Failed to add movie track to peer:', peer.userId, err);
           }
         });
-        await this.requestNegotiation(peerId);
+        await this.requestNegotiation(peer.userId);
       }
 
       // Handle track endings
@@ -1755,6 +1808,8 @@ export class WebRTCManager {
         this.remoteMovieStream.addTrack(track);
         console.log('[MOVIE] Added track to existing remote movie stream:', track.kind, track.id);
       }
+      // Re-instantiate MediaStream container to ensure React state updates detect changes
+      this.remoteMovieStream = new MediaStream(this.remoteMovieStream.getTracks());
     }
 
     this.movieStreamOwnerInfo = {
@@ -1777,6 +1832,8 @@ export class WebRTCManager {
     peer.isMovieStreaming = true;
     peer.movieStream = this.remoteMovieStream;
     this.peerMediaStates.set(remoteUserId, peer);
+    this.notifyRemoteMovieStream();
+    this.notifyPeerStates();
   }
 
   /**

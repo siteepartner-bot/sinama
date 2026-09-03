@@ -30,6 +30,9 @@ export interface IRoomService {
   subscribe(roomId: string, onUpdate: (room: Room, messages: ChatMessage[]) => void): () => void;
   onConnectionStatus(onStatus: (status: ConnectionStatus) => void): () => void;
   getConnectionStatus(): ConnectionStatus;
+  getCurrentRoom(): Room | null;
+  getCurrentActiveRoomId(): string | null;
+  getRoomUsers(roomId?: string): RoomUser[];
   
   // Real-Time Video Event Broadcasters
   broadcastPlay(roomId: string, currentTime: number): void;
@@ -910,6 +913,24 @@ class DurableRoomService implements IRoomService {
 
   getConnectionStatus(): ConnectionStatus {
     return realTimeClient.getStatus();
+  }
+
+  getCurrentRoom(): Room | null {
+    if (!this.currentActiveRoomId) return null;
+    const rooms = this.getRoomsMap();
+    return rooms[this.currentActiveRoomId] || null;
+  }
+
+  getCurrentActiveRoomId(): string | null {
+    return this.currentActiveRoomId;
+  }
+
+  getRoomUsers(roomId?: string): RoomUser[] {
+    const targetRoomId = roomId || this.currentActiveRoomId;
+    if (!targetRoomId) return [];
+    const rooms = this.getRoomsMap();
+    const room = rooms[targetRoomId];
+    return room?.users || [];
   }
 
   // --- Session persistence helpers ---

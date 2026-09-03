@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useRoom } from '../../hooks/useRoom';
+import { webRTCManager } from '../../services/webRTCManager';
 
 export interface RemoteMoviePlayerProps {
   key?: React.Key;
@@ -221,6 +222,19 @@ export function RemoteMoviePlayer({
         ref={videoRef}
         autoPlay
         playsInline
+        onLoadedMetadata={() => {
+          setStreamConnecting(false);
+          setHasVideoTrack(true);
+        }}
+        onCanPlay={() => {
+          setStreamConnecting(false);
+          setHasVideoTrack(true);
+        }}
+        onPlaying={() => {
+          setIsPlaying(true);
+          setStreamConnecting(false);
+          setHasVideoTrack(true);
+        }}
         className="w-full h-full object-contain"
       />
 
@@ -254,9 +268,25 @@ export function RemoteMoviePlayer({
               اتصال WebRTC مستقیم برقرار است و پخش زنده فایل به زودی آغاز خواهد شد...
             </p>
 
-            <div className="flex items-center gap-2 px-3.5 py-1.5 bg-zinc-900/80 border border-zinc-800 rounded-xl text-xs text-zinc-400">
-              <Loader2 className="h-4 w-4 animate-spin text-rose-500" />
-              <span>در حال برقراری جریان مدیا (WebRTC Mesh)...</span>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <div className="flex items-center gap-2 px-3.5 py-1.5 bg-zinc-900/80 border border-zinc-800 rounded-xl text-xs text-zinc-400">
+                <Loader2 className="h-4 w-4 animate-spin text-rose-500" />
+                <span>در حال برقراری جریان مدیا (WebRTC Mesh)...</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (videoRef.current) {
+                    videoRef.current.play().catch(() => {});
+                  }
+                  showToast('در حال تلاش مجدد برای اتصال WebRTC...');
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/80 text-zinc-200 text-xs rounded-xl transition-colors cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5 text-rose-400" />
+                <span>تلاش مجدد اتصال</span>
+              </button>
             </div>
           </motion.div>
         )}
