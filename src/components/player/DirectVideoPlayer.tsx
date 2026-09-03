@@ -20,6 +20,8 @@ export interface DirectVideoPlayerProps {
   onRateChange?: (rate: number) => void;
   onEnded?: () => void;
   onError?: (msg: string) => void;
+  onSelectOtherSource?: () => void;
+  onClearSource?: () => void;
 }
 
 export function DirectVideoPlayer({
@@ -37,6 +39,8 @@ export function DirectVideoPlayer({
   onRateChange,
   onEnded,
   onError,
+  onSelectOtherSource,
+  onClearSource,
 }: DirectVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -507,7 +511,14 @@ export function DirectVideoPlayer({
       )}
 
       {/* Error Overlay */}
-      {hasError && <VideoError message={errorMessage} onRetry={handleRetry} />}
+      {hasError && (
+        <VideoError
+          message={errorMessage}
+          onRetry={handleRetry}
+          onSelectOtherSource={onSelectOtherSource}
+          onClearSource={onClearSource}
+        />
+      )}
 
       {/* Controls Overlay */}
       {!hasError && (

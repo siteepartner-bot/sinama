@@ -21,6 +21,7 @@ interface VideoPlayerCoreProps {
   onEnded?: () => void;
   onSelectSampleSource?: (type: 'youtube' | 'aparat' | 'direct') => void;
   onOpenSourcePanel?: () => void;
+  onClearSource?: () => void;
 }
 
 export function VideoPlayerCore({
@@ -34,7 +35,8 @@ export function VideoPlayerCore({
   onRateChange,
   onEnded,
   onSelectSampleSource,
-  onOpenSourcePanel
+  onOpenSourcePanel,
+  onClearSource
 }: VideoPlayerCoreProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -165,6 +167,8 @@ export function VideoPlayerCore({
           onSeekChange={onSeekChange}
           onRateChange={onRateChange}
           onEnded={onEnded}
+          onSelectOtherSource={onOpenSourcePanel}
+          onClearSource={onClearSource}
         />
       )}
 

@@ -153,9 +153,9 @@ export function MediaSourcePanel() {
       changeVideoSource('aparat', sample, 'ویدیوی نمونه آپارات');
       showSuccessFeedback('ویدیوی نمونه آپارات بارگذاری شد.');
     } else if (type === 'direct') {
-      const sample = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+      const sample = 'https://vjs.zencdn.net/v/oceans.mp4';
       setDirectUrl(sample);
-      changeVideoSource('direct', sample, 'Big Buck Bunny (Sample HD Video)');
+      changeVideoSource('direct', sample, 'اقیانوس‌ها (ویدیوی نمونه مستقیم)');
       showSuccessFeedback('ویدیوی نمونه مستقیم بارگذاری شد.');
     }
   };

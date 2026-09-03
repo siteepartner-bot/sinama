@@ -13,6 +13,7 @@ export function VideoPlayer({ onOpenSourcePanel }: VideoPlayerProps) {
     canControlVideo,
     allowAnyoneControl,
     changeVideoSource,
+    clearVideoSource,
     setVideoPlaying,
     seekVideo,
     setPlaybackRate,
@@ -25,7 +26,7 @@ export function VideoPlayer({ onOpenSourcePanel }: VideoPlayerProps) {
     } else if (type === 'aparat') {
       changeVideoSource('aparat', 'https://www.aparat.com/v/vM82f', 'ویدیوی نمونه آپارات');
     } else if (type === 'direct') {
-      changeVideoSource('direct', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4', 'Big Buck Bunny (ویدیوی نمونه)');
+      changeVideoSource('direct', 'https://vjs.zencdn.net/v/oceans.mp4', 'اقیانوس‌ها (ویدیوی نمونه مستقیم)');
     }
   };
 
@@ -55,6 +56,7 @@ export function VideoPlayer({ onOpenSourcePanel }: VideoPlayerProps) {
         onEnded={handleVideoEnded}
         onSelectSampleSource={handleSelectSample}
         onOpenSourcePanel={onOpenSourcePanel}
+        onClearSource={clearVideoSource}
       />
     </div>
   );

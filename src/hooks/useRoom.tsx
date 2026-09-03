@@ -43,6 +43,7 @@ interface RoomContextType {
   toggleScreenShare: () => Promise<void>;
   sendChatMessage: (text: string) => Promise<void>;
   changeVideoSource: (sourceType: 'youtube' | 'aparat' | 'direct' | 'local', url: string, title?: string) => Promise<void>;
+  clearVideoSource: () => Promise<void>;
   setVideoPlaying: (isPlaying: boolean, currentTime?: number) => Promise<void>;
   seekVideo: (time: number, isPlaying?: boolean) => Promise<void>;
   setVideoQuality: (quality: string) => Promise<void>;
@@ -422,6 +423,17 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     roomService.broadcastSourceChange(currentRoom.roomId, source, 0, true);
   };
 
+  const clearVideoSource = async () => {
+    if (!currentRoom) return;
+    const emptySource: VideoSource = {
+      type: 'none',
+      url: '',
+      title: 'هنوز ویدیویی انتخاب نشده است',
+      duration: 0
+    };
+    roomService.broadcastSourceChange(currentRoom.roomId, emptySource, 0, false);
+  };
+
   const setVideoPlaying = async (isPlaying: boolean, currentTime?: number) => {
     if (!currentRoom) return;
 
@@ -549,6 +561,7 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
         toggleScreenShare,
         sendChatMessage,
         changeVideoSource,
+        clearVideoSource,
         setVideoPlaying,
         seekVideo,
         setVideoQuality,

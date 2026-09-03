@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AlertTriangle, ArrowRight, Film, Loader2, User, UserPlus, Sparkles } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Film, Loader2, User, UserPlus, Sparkles, Monitor } from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
 import { RoomHeader } from './RoomHeader';
 import { VideoPlayer } from './VideoPlayer';
@@ -20,7 +20,9 @@ export function RoomPage() {
     pendingRoomId,
     setView,
     joinDirectly,
-    clearError
+    clearError,
+    isScreenSharing,
+    remoteScreenStreams
   } = useRoom();
 
   const [showChat, setShowChat] = useState(true);
@@ -29,6 +31,24 @@ export function RoomPage() {
   const [directUserName, setDirectUserName] = useState('');
   const [directJoinError, setDirectJoinError] = useState('');
   const [isJoiningDirectly, setIsJoiningDirectly] = useState(false);
+
+  // Active Screen Share detection across local and remote users
+  const hasActiveScreenShare = Boolean(
+    isScreenSharing ||
+    (remoteScreenStreams && remoteScreenStreams.size > 0) ||
+    roomState?.users.some((u) => u.screenSharingEnabled)
+  );
+
+  const [activeTheaterView, setActiveTheaterView] = useState<'screen' | 'player'>('player');
+
+  // Switch theater view automatically when screen share activates
+  useEffect(() => {
+    if (hasActiveScreenShare) {
+      setActiveTheaterView('screen');
+    } else {
+      setActiveTheaterView('player');
+    }
+  }, [hasActiveScreenShare]);
 
   // Responsive default adjustments
   useEffect(() => {
@@ -257,14 +277,57 @@ export function RoomPage() {
         
         {/* Main Theater Screen Area */}
         <div className="flex-1 flex flex-col gap-6 order-1 lg:order-2">
-          {/* Theater Screen Canvas */}
-          <div className="w-full">
-            <VideoPlayer />
-          </div>
+          {/* Theater Screen Canvas Header & Switcher */}
+          <div className="w-full flex flex-col gap-3">
+            {hasActiveScreenShare && (
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-[#12141c] border border-zinc-800/80 rounded-2xl p-2 shadow-lg">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTheaterView('screen')}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      activeTheaterView === 'screen'
+                        ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/25 ring-1 ring-purple-400/40'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
+                    }`}
+                    id="tab-theater-screen-share"
+                  >
+                    <Monitor className="h-4 w-4 text-purple-200" />
+                    <span>اشتراک تصویر زنده (Screen Share)</span>
+                    <span className="flex h-2 w-2 relative">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                  </button>
 
-          {/* Real-time Screen Share Panel (renders when screen sharing is active) */}
-          <div className="w-full">
-            <ScreenSharePanel />
+                  <button
+                    type="button"
+                    onClick={() => setActiveTheaterView('player')}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      activeTheaterView === 'player'
+                        ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/25 ring-1 ring-rose-400/40'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
+                    }`}
+                    id="tab-theater-video-player"
+                  >
+                    <Film className="h-4 w-4" />
+                    <span>پخش‌کننده فیلم و ویدیو</span>
+                  </button>
+                </div>
+
+                <div className="text-[11px] text-zinc-500 hidden sm:flex items-center gap-1.5 pl-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-600"></span>
+                  <span>{activeTheaterView === 'screen' ? 'در حال تماشای تصویر هم‌اتاقی' : 'در حال تماشای سالن فیلم'}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Active Theater Screen */}
+            {hasActiveScreenShare && activeTheaterView === 'screen' ? (
+              <ScreenSharePanel />
+            ) : (
+              <VideoPlayer />
+            )}
           </div>
 
           {/* WebRTC Video / Audio Call Grid */}
