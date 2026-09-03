@@ -913,6 +913,38 @@ export class RoomDurableObject {
   }
 }
 
+// In-memory upload and stream storage for Cloudflare Worker environment
+interface WorkerUploadSession {
+  fileName: string;
+  totalChunks: number;
+  chunks: Map<number, Uint8Array>;
+  mimeType: string;
+  createdAt: number;
+}
+
+interface WorkerStoredFile {
+  fileName: string;
+  data: Uint8Array;
+  mimeType: string;
+  createdAt: number;
+}
+
+const workerUploads = new Map<string, WorkerUploadSession>();
+const workerStoredFiles = new Map<string, WorkerStoredFile>();
+
+function getWorkerMimeType(filename: string): string {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.mp4') || lower.endsWith('.m4v')) return 'video/mp4';
+  if (lower.endsWith('.webm')) return 'video/webm';
+  if (lower.endsWith('.mkv')) return 'video/x-matroska';
+  if (lower.endsWith('.mov')) return 'video/quicktime';
+  if (lower.endsWith('.avi')) return 'video/x-msvideo';
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.wav')) return 'audio/wav';
+  if (lower.endsWith('.ogg')) return 'audio/ogg';
+  return 'video/mp4';
+}
+
 /**
  * Main Cloudflare Worker router
  */
@@ -920,14 +952,200 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // 1. Health check
-    if (url.pathname === '/api/health') {
-      return new Response(JSON.stringify({ status: 'ok', service: 'Roomy Cloudflare Worker' }), {
-        headers: { 'Content-Type': 'application/json' }
+    // 0. Handle CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': '*',
+          'Access-Control-Max-Age': '86400'
+        }
       });
     }
 
-    // 2. WebSocket & Real-time Room routes (e.g. /api/room/:roomId/ws or /ws/:roomId)
+    // 1. Health check
+    if (url.pathname === '/api/health') {
+      return new Response(JSON.stringify({ status: 'ok', service: 'Roomy Cloudflare Worker' }), {
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+      });
+    }
+
+    // 2. High-Speed Upload APIs in Worker
+    if (url.pathname === '/api/upload/init' && request.method === 'POST') {
+      try {
+        const body: any = await request.json();
+        const { fileName, totalChunks } = body;
+        if (!fileName || !totalChunks) {
+          return new Response(JSON.stringify({ error: 'اطلاعات فایل ناقص است.' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
+
+        const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        workerUploads.set(uploadId, {
+          fileName,
+          totalChunks,
+          chunks: new Map<number, Uint8Array>(),
+          mimeType: getWorkerMimeType(fileName),
+          createdAt: Date.now()
+        });
+
+        return new Response(JSON.stringify({ success: true, uploadId, totalChunks }), {
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message || 'خطا در شروع آپلود' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+    }
+
+    if (url.pathname === '/api/upload/chunk' && request.method === 'POST') {
+      try {
+        const uploadId = url.searchParams.get('uploadId') || request.headers.get('x-upload-id') || '';
+        const chunkIndexStr = url.searchParams.get('chunkIndex') || request.headers.get('x-chunk-index') || '0';
+        const chunkIndex = parseInt(chunkIndexStr, 10);
+
+        const session = workerUploads.get(uploadId);
+        if (!session) {
+          return new Response(JSON.stringify({ error: 'شناسه آپلود منقضی شده است.' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
+
+        const arrayBuffer = await request.arrayBuffer();
+        const chunkData = new Uint8Array(arrayBuffer);
+        session.chunks.set(chunkIndex, chunkData);
+
+        return new Response(JSON.stringify({ success: true, chunkIndex, receivedBytes: chunkData.length }), {
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message || 'خطا در ثبت چانک' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+    }
+
+    if (url.pathname === '/api/upload/complete' && request.method === 'POST') {
+      try {
+        const body: any = await request.json();
+        const { uploadId, fileName, totalChunks } = body;
+        const session = workerUploads.get(uploadId);
+
+        if (!session) {
+          return new Response(JSON.stringify({ error: 'نشست آپلود یافت نشد.' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
+
+        // Calculate total size and assemble
+        let totalSize = 0;
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = session.chunks.get(i);
+          if (!chunk) {
+            return new Response(JSON.stringify({ error: `تکه شماره ${i} مفقود شده است.` }), {
+              status: 400,
+              headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+            });
+          }
+          totalSize += chunk.length;
+        }
+
+        const combined = new Uint8Array(totalSize);
+        let offset = 0;
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = session.chunks.get(i)!;
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+
+        const fileId = `${Date.now()}_${encodeURIComponent(fileName || session.fileName)}`;
+        workerStoredFiles.set(fileId, {
+          fileName: fileName || session.fileName,
+          data: combined,
+          mimeType: session.mimeType,
+          createdAt: Date.now()
+        });
+
+        workerUploads.delete(uploadId);
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            url: `/api/uploads/${fileId}`,
+            fileName: fileName || session.fileName,
+            size: totalSize,
+            mimetype: session.mimeType
+          }),
+          {
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          }
+        );
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message || 'خطا در تجمیع ویدیو' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+    }
+
+    // Stream uploaded files in Worker
+    if (url.pathname.startsWith('/api/uploads/')) {
+      const fileId = url.pathname.replace('/api/uploads/', '');
+      const stored = workerStoredFiles.get(fileId);
+
+      if (!stored) {
+        return new Response(JSON.stringify({ error: 'فایل ویدیو یافت نشد.' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+
+      const fileSize = stored.data.length;
+      const rangeHeader = request.headers.get('range');
+
+      if (rangeHeader) {
+        const parts = rangeHeader.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+        if (start >= fileSize) {
+          return new Response('Requested range not satisfiable', { status: 416 });
+        }
+
+        const chunk = stored.data.slice(start, end + 1);
+        return new Response(chunk, {
+          status: 206,
+          headers: {
+            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': chunk.length.toString(),
+            'Content-Type': stored.mimeType,
+            'Access-Control-Allow-Origin': '*'
+          }
+        });
+      }
+
+      return new Response(stored.data, {
+        status: 200,
+        headers: {
+          'Content-Length': fileSize.toString(),
+          'Content-Type': stored.mimeType,
+          'Accept-Ranges': 'bytes',
+          'Access-Control-Allow-Origin': '*'
+        }
+      });
+    }
+
+    // 3. WebSocket & Real-time Room routes (e.g. /api/room/:roomId/ws or /ws/:roomId)
     const isWebSocket = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
     const isRoomApi = url.pathname.startsWith('/api/room') || url.pathname.startsWith('/ws');
 
@@ -942,9 +1160,13 @@ export default {
       }
     }
 
-    // 3. Serve Frontend React Web App & Static Assets
+    // 4. Serve Frontend React Web App & Static Assets
     if (env.ASSETS) {
-      return env.ASSETS.fetch(request);
+      try {
+        return await env.ASSETS.fetch(request);
+      } catch (assetErr) {
+        console.warn('Asset fetch fallback:', assetErr);
+      }
     }
 
     return new Response('Roomy Web App is running.', { status: 200 });
