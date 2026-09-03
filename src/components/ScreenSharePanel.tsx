@@ -39,25 +39,39 @@ export function ScreenSharePanel() {
   }
 
   // Remote screen streams
-  if (roomState) {
-    roomState.users.forEach((user) => {
-      if (user.userId === currentUser?.userId) return;
+  const processedUserIds = new Set<string>();
 
-      const streamFromMap = remoteScreenStreams.get(user.userId);
-      const peerState = peerMediaStates.get(user.userId);
-      const stream = streamFromMap || peerState?.screenStream;
-      const isSharing = !!(user.screenSharingEnabled || peerState?.screenSharing || stream);
+  remoteScreenStreams.forEach((stream, remoteUserId) => {
+    if (remoteUserId === currentUser?.userId) return;
+    processedUserIds.add(remoteUserId);
+    const peerState = peerMediaStates.get(remoteUserId);
+    const userInRoom = roomState?.users.find((u) => u.userId === remoteUserId);
+    const name = peerState?.name || userInRoom?.name || 'هم‌اتاقی';
 
-      if (isSharing && stream) {
-        activeShares.push({
-          userId: user.userId,
-          userName: user.name,
-          stream,
-          isLocal: false
-        });
-      }
-    });
-  }
+    if (stream && stream.getVideoTracks().length > 0) {
+      activeShares.push({
+        userId: remoteUserId,
+        userName: name,
+        stream,
+        isLocal: false
+      });
+    }
+  });
+
+  peerMediaStates.forEach((peerState, remoteUserId) => {
+    if (remoteUserId === currentUser?.userId || processedUserIds.has(remoteUserId)) return;
+    if (peerState.screenStream && peerState.screenStream.getVideoTracks().length > 0) {
+      processedUserIds.add(remoteUserId);
+      const userInRoom = roomState?.users.find((u) => u.userId === remoteUserId);
+      const name = peerState.name || userInRoom?.name || 'هم‌اتاقی';
+      activeShares.push({
+        userId: remoteUserId,
+        userName: name,
+        stream: peerState.screenStream,
+        isLocal: false
+      });
+    }
+  });
 
   // Ensure an active tab is selected
   useEffect(() => {

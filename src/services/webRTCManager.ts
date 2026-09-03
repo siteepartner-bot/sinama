@@ -351,9 +351,13 @@ export class WebRTCManager {
       this.localScreenStream.getTracks().forEach((track) => {
         try {
           pc!.addTrack(track, this.localScreenStream!);
-          console.log('[SCREEN TRACK ADDED TO NEW PEER CONNECTION]', { remoteUserId, kind: track.kind });
+          console.log('[SCREEN] Adding screen track to late-joining peer:', remoteUserId, {
+            kind: track.kind,
+            trackId: track.id,
+            readyState: track.readyState
+          });
         } catch (err) {
-          console.warn('Failed to add screen track to new peer connection', err);
+          console.warn('[SCREEN] Failed to add screen track to late-joining peer:', remoteUserId, err);
         }
       });
     }
@@ -367,11 +371,12 @@ export class WebRTCManager {
 
     // 3. Handle Remote Track
     pc.ontrack = (event) => {
-      console.log('[REMOTE TRACK RECEIVED]', {
-        remoteUserId,
+      console.log('[SCREEN] Remote track received:', {
+        fromUserId: remoteUserId,
+        trackId: event.track.id,
         kind: event.track.kind,
-        streamId: event.streams[0]?.id,
-        trackId: event.track.id
+        readyState: event.track.readyState,
+        streamId: event.streams[0]?.id
       });
 
       const incomingStream = event.streams[0] || new MediaStream([event.track]);
@@ -379,29 +384,38 @@ export class WebRTCManager {
       const peerState = this.peerMediaStates.get(remoteUserId);
 
       // Distinguish screen share track vs camera/mic track
-      const isScreenTrack =
-        (cameraStream && incomingStream.id !== cameraStream.id) ||
-        (cameraStream && cameraStream.getVideoTracks().length > 0 && event.track.kind === 'video') ||
-        (peerState?.screenSharing && incomingStream.id !== cameraStream?.id);
+      if (event.track.kind === 'video') {
+        const isScreenTrack =
+          (peerState?.screenSharing === true && (!cameraStream || incomingStream.id !== cameraStream.id || !peerState.cameraEnabled)) ||
+          (cameraStream && cameraStream.getVideoTracks().length > 0 && !cameraStream.getVideoTracks().some((t) => t.id === event.track.id)) ||
+          (cameraStream && incomingStream.id !== cameraStream.id);
 
-      if (isScreenTrack) {
-        let screenStream = this.remoteScreenStreams.get(remoteUserId);
-        if (!screenStream) {
-          screenStream = incomingStream;
-          this.remoteScreenStreams.set(remoteUserId, screenStream);
-        } else {
-          if (!screenStream.getTracks().some((t) => t.id === event.track.id)) {
-            screenStream.addTrack(event.track);
+        if (isScreenTrack) {
+          let screenStream = this.remoteScreenStreams.get(remoteUserId);
+          if (!screenStream || screenStream.id !== incomingStream.id) {
+            screenStream = incomingStream;
+            this.remoteScreenStreams.set(remoteUserId, screenStream);
+          } else {
+            if (!screenStream.getTracks().some((t) => t.id === event.track.id)) {
+              screenStream.addTrack(event.track);
+            }
           }
+
+          if (peerState) {
+            peerState.screenStream = screenStream;
+            peerState.screenSharing = true;
+          }
+
+          console.log('[SCREEN] Remote stream attached for peer:', remoteUserId, {
+            screenStreamId: screenStream.id,
+            videoTrackCount: screenStream.getVideoTracks().length,
+            trackId: event.track.id
+          });
+
+          this.notifyRemoteScreenStreams();
+          this.notifyPeerStates();
+          return;
         }
-        if (peerState) {
-          peerState.screenStream = screenStream;
-          peerState.screenSharing = true;
-        }
-        console.log('[REMOTE SCREEN STREAM ASSIGNED]', { remoteUserId });
-        this.notifyRemoteScreenStreams();
-        this.notifyPeerStates();
-        return;
       }
 
       // Default: Camera / Microphone Stream
@@ -426,14 +440,20 @@ export class WebRTCManager {
     // 4. Handle Negotiation Needed (Polite / Impolite collision avoidance)
     pc.onnegotiationneeded = async () => {
       try {
-        console.log('[NEGOTIATION NEEDED]', { remoteUserId });
+        console.log('[SCREEN] Negotiation needed event for peer:', remoteUserId);
+        if (pc!.signalingState !== 'stable') {
+          console.log('[SCREEN] Negotiation needed ignored, signalingState is:', pc!.signalingState);
+          return;
+        }
         this.makingOffer.set(remoteUserId, true);
-        await pc!.setLocalDescription();
+        const offer = await pc!.createOffer();
+        await pc!.setLocalDescription(offer);
+        console.log('[SCREEN] Offer sent from negotiationneeded to:', remoteUserId);
         if (pc!.localDescription) {
           realTimeClient.emitWebRTCOffer(remoteUserId, pc!.localDescription);
         }
       } catch (err) {
-        console.error('[OFFER GENERATION FAILED]', err);
+        console.error('[SCREEN] Offer generation failed on negotiationneeded for:', remoteUserId, err);
       } finally {
         this.makingOffer.set(remoteUserId, false);
       }
@@ -797,7 +817,7 @@ export class WebRTCManager {
     }
 
     try {
-      console.log('[START SCREEN SHARE REQUESTED]');
+      console.log('[SCREEN] Start screen share requested');
       let displayStream: MediaStream;
       try {
         displayStream = await navigator.mediaDevices.getDisplayMedia({
@@ -805,28 +825,36 @@ export class WebRTCManager {
           audio: true
         });
       } catch (err) {
-        console.warn('getDisplayMedia with system audio failed, falling back to video only:', err);
+        console.warn('[SCREEN] getDisplayMedia with system audio failed, falling back to video only:', err);
         displayStream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: false
         });
       }
 
+      console.log('[SCREEN] Local stream created:', displayStream.id);
+
       const screenVideoTrack = displayStream.getVideoTracks()[0];
       if (!screenVideoTrack) {
         throw new Error('هیچ تصویر ویدیویی از صفحه نمایش دریافت نشد.');
       }
+
+      console.log('[SCREEN] Video track:', {
+        id: screenVideoTrack.id,
+        kind: screenVideoTrack.kind,
+        readyState: screenVideoTrack.readyState
+      });
 
       this.localScreenStream = displayStream;
       this.isScreenSharing = true;
 
       // Handle browser's native "Stop Sharing" UI banner click
       screenVideoTrack.onended = () => {
-        console.log('[SCREEN TRACK ENDED VIA BROWSER UI]');
+        console.log('[SCREEN] Track ended via browser UI banner');
         this.stopScreenShare();
       };
 
-      // Add screen tracks to all peer connections
+      // Add screen tracks to all peer connections and initiate negotiation
       this.syncScreenTracksWithAllPeers();
 
       realTimeClient.emitScreenShareStarted();
@@ -845,7 +873,7 @@ export class WebRTCManager {
       return true;
     } catch (err: unknown) {
       const error = err as { name?: string; message?: string };
-      console.warn('Screen share cancelled or failed:', err);
+      console.warn('[SCREEN] Screen share cancelled or failed:', err);
       if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
         // User cancelled dialog
         return false;
@@ -862,6 +890,7 @@ export class WebRTCManager {
   public syncScreenTracksWithAllPeers(): void {
     if (!this.localScreenStream) return;
     const screenTracks = this.localScreenStream.getTracks();
+    console.log('[SCREEN] Active peers count:', this.peerConnections.size);
 
     this.peerConnections.forEach((pc, remoteUserId) => {
       if (pc.signalingState === 'closed') return;
@@ -871,11 +900,19 @@ export class WebRTCManager {
         const alreadyAdded = senders.some((s) => s.track?.id === track.id);
         if (!alreadyAdded) {
           try {
-            pc.addTrack(track, this.localScreenStream!);
-            console.log('[SCREEN TRACK ADDED TO PEER]', { remoteUserId, kind: track.kind });
+            console.log('[SCREEN] Adding screen track to peer:', remoteUserId);
+            const sender = pc.addTrack(track, this.localScreenStream!);
+            console.log('[SCREEN] Sender created:', sender.track?.id || track.id);
+
+            // Force renegotiation if signalingState is stable
+            if (pc.signalingState === 'stable') {
+              this.initiateOffer(remoteUserId, pc);
+            }
           } catch (err) {
-            console.warn('Failed to add screen track to peer:', err);
+            console.warn('[SCREEN] Failed to add screen track to peer:', remoteUserId, err);
           }
+        } else {
+          console.log('[SCREEN] Screen track already added to peer:', remoteUserId);
         }
       });
     });
@@ -888,24 +925,29 @@ export class WebRTCManager {
     if (this.isCleaningUpScreenShare || (!this.isScreenSharing && !this.localScreenStream)) return;
     this.isCleaningUpScreenShare = true;
 
-    console.log('[STOP SCREEN SHARE REQUESTED]');
+    console.log('[SCREEN] Stop screen share requested');
 
     try {
       if (this.localScreenStream) {
         const screenTrackIds = new Set(this.localScreenStream.getTracks().map((t) => t.id));
 
-        this.peerConnections.forEach((pc) => {
+        this.peerConnections.forEach((pc, remoteUserId) => {
           if (pc.signalingState === 'closed') return;
           const senders = pc.getSenders();
           senders.forEach((sender) => {
             if (sender.track && screenTrackIds.has(sender.track.id)) {
               try {
                 pc.removeTrack(sender);
+                console.log('[SCREEN] Removed screen track sender from peer:', remoteUserId);
               } catch (err) {
-                console.warn('Failed to remove screen track sender:', err);
+                console.warn('[SCREEN] Failed to remove screen track sender:', err);
               }
             }
           });
+
+          if (pc.signalingState === 'stable') {
+            this.initiateOffer(remoteUserId, pc);
+          }
         });
 
         this.localScreenStream.getTracks().forEach((track) => {
