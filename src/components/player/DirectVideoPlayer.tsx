@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, VolumeX, CheckCircle2 } from 'lucide-react';
 import { VideoControls } from './VideoControls';
 import { VideoError } from './VideoError';
 import { realTimeClient } from '../../services/realtimeClient';
@@ -10,6 +10,7 @@ export interface DirectVideoPlayerProps {
   title?: string;
   initialPlayState?: boolean;
   targetTime?: number;
+  updatedAt?: number;
   playbackRate?: number;
   onPlayChange?: (isPlaying: boolean, currentTime: number) => void;
   onSeekChange?: (time: number) => void;
@@ -23,6 +24,7 @@ export function DirectVideoPlayer({
   title = 'ویدیوی مستقیم',
   initialPlayState = false,
   targetTime = 0,
+  updatedAt = 0,
   playbackRate: externalPlaybackRate = 1,
   onPlayChange,
   onSeekChange,
@@ -47,9 +49,12 @@ export function DirectVideoPlayer({
   const [hasError, setHasError] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [isEnded, setIsEnded] = useState<boolean>(false);
+  const [autoplayBlocked, setAutoplayBlocked] = useState<boolean>(false);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
-  // Anti-loop lock ref
+  // Prevent programmatic remote updates from looping back as local events
   const isProgrammaticUpdate = useRef<boolean>(false);
+  const lastHandledUpdatedAt = useRef<number>(updatedAt);
 
   // Auto hide controls
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -62,7 +67,7 @@ export function DirectVideoPlayer({
     if (isPlaying) {
       controlsTimeoutRef.current = setTimeout(() => {
         setShowControls(false);
-      }, 3000);
+      }, 3500);
     }
   }, [isPlaying]);
 
@@ -75,44 +80,99 @@ export function DirectVideoPlayer({
     };
   }, [isPlaying, triggerControlsShow]);
 
-  // Synchronize remote play/pause state
+  // Show transient sync feedback toast
+  const showFeedbackToast = useCallback((msg: string) => {
+    setSyncFeedback(msg);
+    setTimeout(() => {
+      setSyncFeedback((prev) => (prev === msg ? null : prev));
+    }, 2500);
+  }, []);
+
+  // 1. Synchronize remote play/pause state
   useEffect(() => {
-    if (!videoRef.current) return;
-    if (initialPlayState && videoRef.current.paused) {
-      isProgrammaticUpdate.current = true;
-      videoRef.current.play().catch(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (initialPlayState) {
+      if (video.paused) {
+        isProgrammaticUpdate.current = true;
+        // Correct time drift if targetTime is specified
+        if (targetTime !== undefined && Math.abs(video.currentTime - targetTime) > 0.4) {
+          video.currentTime = targetTime;
+          setCurrentTime(targetTime);
+        }
+
+        video
+          .play()
+          .then(() => {
+            setIsPlaying(true);
+            setAutoplayBlocked(false);
+          })
+          .catch((err) => {
+            console.warn('Autoplay blocked or play failed, attempting muted fallback:', err);
+            // Fallback: play muted to maintain sync
+            video.muted = true;
+            setIsMuted(true);
+            video
+              .play()
+              .then(() => {
+                setIsPlaying(true);
+                setAutoplayBlocked(true);
+              })
+              .catch(() => {
+                setIsPlaying(false);
+              });
+          })
+          .finally(() => {
+            setTimeout(() => {
+              isProgrammaticUpdate.current = false;
+            }, 120);
+          });
+      }
+    } else {
+      if (!video.paused) {
+        isProgrammaticUpdate.current = true;
+        video.pause();
         setIsPlaying(false);
-      }).finally(() => {
+        if (targetTime !== undefined && Math.abs(video.currentTime - targetTime) > 0.2) {
+          video.currentTime = targetTime;
+          setCurrentTime(targetTime);
+        }
         setTimeout(() => {
           isProgrammaticUpdate.current = false;
-        }, 100);
-      });
-      setIsPlaying(true);
-    } else if (!initialPlayState && !videoRef.current.paused) {
-      isProgrammaticUpdate.current = true;
-      videoRef.current.pause();
-      setIsPlaying(false);
-      setTimeout(() => {
-        isProgrammaticUpdate.current = false;
-      }, 100);
+        }, 120);
+      }
     }
-  }, [initialPlayState]);
+  }, [initialPlayState, targetTime]);
 
-  // Synchronize remote seek target time (compensate drift > 0.75s)
+  // 2. Synchronize remote seek target time & updates
   useEffect(() => {
-    if (!videoRef.current || duration <= 0) return;
-    const diff = Math.abs(videoRef.current.currentTime - targetTime);
-    if (diff > 0.85) {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const isNewEvent = updatedAt && updatedAt !== lastHandledUpdatedAt.current;
+    if (isNewEvent) {
+      lastHandledUpdatedAt.current = updatedAt;
+    }
+
+    const drift = Math.abs(video.currentTime - targetTime);
+    // Align if explicit new event or noticeable drift > 0.5s
+    if (isNewEvent || drift > 0.5) {
       isProgrammaticUpdate.current = true;
-      videoRef.current.currentTime = targetTime;
+      video.currentTime = targetTime;
       setCurrentTime(targetTime);
+
+      if (initialPlayState && video.paused) {
+        video.play().catch(() => {});
+      }
+
       setTimeout(() => {
         isProgrammaticUpdate.current = false;
-      }, 100);
+      }, 120);
     }
-  }, [targetTime, duration]);
+  }, [targetTime, updatedAt, initialPlayState]);
 
-  // Synchronize remote playback rate
+  // 3. Synchronize remote playback rate
   useEffect(() => {
     if (externalPlaybackRate && externalPlaybackRate !== playbackRate) {
       setPlaybackRate(externalPlaybackRate);
@@ -143,53 +203,64 @@ export function DirectVideoPlayer({
     }
   }, [playbackRate]);
 
-  // Handle Play/Pause
-  const handleTogglePlay = () => {
-    if (!videoRef.current) return;
+  // Handle Play/Pause by local user
+  const handleTogglePlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
     if (isEnded) {
-      videoRef.current.currentTime = 0;
+      video.currentTime = 0;
       setIsEnded(false);
     }
 
-    if (videoRef.current.paused) {
-      videoRef.current.play().then(() => {
-        setIsPlaying(true);
-        if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
-          onPlayChange?.(true, videoRef.current?.currentTime || 0);
-        }
-      }).catch((e) => {
-        console.warn('Autoplay blocked or play failed', e);
-        setIsPlaying(false);
-      });
+    if (video.paused) {
+      video
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+          setAutoplayBlocked(false);
+          if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
+            onPlayChange?.(true, video.currentTime);
+            showFeedbackToast('پخش برای همه همگام شد');
+          }
+        })
+        .catch((e) => {
+          console.warn('Autoplay blocked or play failed', e);
+          setIsPlaying(false);
+        });
     } else {
-      videoRef.current.pause();
+      video.pause();
       setIsPlaying(false);
       if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
-        onPlayChange?.(false, videoRef.current.currentTime || 0);
+        onPlayChange?.(false, video.currentTime);
+        showFeedbackToast('توقف برای همه همگام شد');
       }
     }
-  };
+  }, [isEnded, onPlayChange, showFeedbackToast]);
 
-  // Handle Seek
-  const handleSeek = (time: number) => {
-    if (!videoRef.current) return;
-    const clampedTime = Math.max(0, Math.min(time, duration));
-    videoRef.current.currentTime = clampedTime;
+  // Handle Seek by local user
+  const handleSeek = useCallback((time: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const clampedTime = Math.max(0, Math.min(time, duration > 0 ? duration : Infinity));
+    video.currentTime = clampedTime;
     setCurrentTime(clampedTime);
     setIsEnded(false);
 
     if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
       onSeekChange?.(clampedTime);
+      showFeedbackToast(`تغییر زمان برای همه همگام شد`);
     }
-  };
+  }, [duration, onSeekChange, showFeedbackToast]);
 
-  // Handle Playback Rate change
-  const handlePlaybackRateChange = (rate: number) => {
+  // Handle Playback Rate change by local user
+  const handlePlaybackRateChange = useCallback((rate: number) => {
     setPlaybackRate(rate);
     if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
       onRateChange?.(rate);
     }
-  };
+  }, [onRateChange]);
 
   // Handle Volume
   const handleVolumeChange = (newVol: number) => {
@@ -199,10 +270,12 @@ export function DirectVideoPlayer({
     } else if (newVol === 0) {
       setIsMuted(true);
     }
+    setAutoplayBlocked(false);
   };
 
   const handleToggleMute = () => {
     setIsMuted(!isMuted);
+    setAutoplayBlocked(false);
   };
 
   // Handle Fullscreen
@@ -233,19 +306,56 @@ export function DirectVideoPlayer({
     }
   };
 
+  // Keyboard Shortcuts (Space, K, J, L, Arrow Left, Arrow Right, M, F)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore when focused in input, textarea, or contentEditable
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.code === 'Space' || e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        handleTogglePlay();
+      } else if (e.code === 'ArrowRight' || e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        handleSeek((videoRef.current?.currentTime || currentTime) + (e.code === 'ArrowRight' ? 5 : 10));
+      } else if (e.code === 'ArrowLeft' || e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        handleSeek((videoRef.current?.currentTime || currentTime) - (e.code === 'ArrowLeft' ? 5 : 10));
+      } else if (e.key.toLowerCase() === 'm') {
+        e.preventDefault();
+        handleToggleMute();
+      } else if (e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        handleToggleFullscreen();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleTogglePlay, handleSeek, currentTime]);
+
   // Video element event listeners
   const onTimeUpdate = () => {
-    if (!videoRef.current) return;
-    setCurrentTime(videoRef.current.currentTime);
+    const video = videoRef.current;
+    if (!video) return;
+    setCurrentTime(video.currentTime);
 
     // Calculate buffered progress
-    if (videoRef.current.buffered.length > 0) {
-      for (let i = 0; i < videoRef.current.buffered.length; i++) {
+    if (video.buffered.length > 0) {
+      for (let i = 0; i < video.buffered.length; i++) {
         if (
-          videoRef.current.buffered.start(i) <= videoRef.current.currentTime &&
-          videoRef.current.currentTime <= videoRef.current.buffered.end(i)
+          video.buffered.start(i) <= video.currentTime &&
+          video.currentTime <= video.buffered.end(i)
         ) {
-          setBufferedTime(videoRef.current.buffered.end(i));
+          setBufferedTime(video.buffered.end(i));
           break;
         }
       }
@@ -253,22 +363,26 @@ export function DirectVideoPlayer({
   };
 
   const onLoadedMetadata = () => {
-    if (!videoRef.current) return;
-    setDuration(videoRef.current.duration || 0);
+    const video = videoRef.current;
+    if (!video) return;
+    setDuration(video.duration || 0);
     setIsBuffering(false);
     setHasError(false);
 
     if (targetTime > 0) {
-      videoRef.current.currentTime = targetTime;
+      video.currentTime = targetTime;
       setCurrentTime(targetTime);
     }
 
     if (initialPlayState) {
-      videoRef.current.play().then(() => {
-        setIsPlaying(true);
-      }).catch(() => {
-        setIsPlaying(false);
-      });
+      video
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+        })
+        .catch(() => {
+          setIsPlaying(false);
+        });
     }
   };
 
@@ -277,7 +391,9 @@ export function DirectVideoPlayer({
     setIsBuffering(false);
     setIsPlaying(true);
   };
-  const onPause = () => setIsPlaying(false);
+  const onPause = () => {
+    setIsPlaying(false);
+  };
 
   const onVideoEnded = () => {
     setIsPlaying(false);
@@ -288,7 +404,8 @@ export function DirectVideoPlayer({
   const onVideoError = () => {
     setIsBuffering(false);
     setHasError(true);
-    const msg = 'مرورگر قادر به پخش مستقیم این کدک یا فرمت ویدیویی نیست (فرمت‌های MKV, MP4, WebM, MOV با کدک‌های استاندارد H.264/VP8/VP9/AV1 پشتیبانی می‌شوند).';
+    const msg =
+      'مرورگر قادر به پخش مستقیم این کدک یا فرمت ویدیویی نیست (فرمت‌های MKV, MP4, WebM, MOV با کدک‌های استاندارد H.264/VP8/VP9/AV1 پشتیبانی می‌شوند).';
     setErrorMessage(msg);
     onError?.(msg);
   };
@@ -298,6 +415,15 @@ export function DirectVideoPlayer({
     setIsBuffering(true);
     if (videoRef.current) {
       videoRef.current.load();
+    }
+  };
+
+  const handleUnblockAudio = () => {
+    setAutoplayBlocked(false);
+    setIsMuted(false);
+    if (videoRef.current) {
+      videoRef.current.muted = false;
+      videoRef.current.play().catch(() => {});
     }
   };
 
@@ -336,13 +462,28 @@ export function DirectVideoPlayer({
         </div>
       )}
 
-      {/* Error Overlay */}
-      {hasError && (
-        <VideoError
-          message={errorMessage}
-          onRetry={handleRetry}
-        />
+      {/* Autoplay blocked sound banner */}
+      {autoplayBlocked && isPlaying && (
+        <button
+          type="button"
+          onClick={handleUnblockAudio}
+          className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3.5 py-1.5 bg-amber-500/90 hover:bg-amber-500 text-black text-xs font-bold rounded-full shadow-2xl backdrop-blur-md cursor-pointer z-30 transition-all hover:scale-105"
+        >
+          <VolumeX className="h-4 w-4" />
+          <span>ویدیو همگام شد — برای وصل صدا کلیک کنید</span>
+        </button>
       )}
+
+      {/* Real-Time Sync Feedback Toast */}
+      {syncFeedback && (
+        <div className="absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/90 text-white text-xs font-semibold rounded-xl shadow-xl backdrop-blur-md z-30 animate-in fade-in slide-in-from-top-2 duration-200">
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          <span>{syncFeedback}</span>
+        </div>
+      )}
+
+      {/* Error Overlay */}
+      {hasError && <VideoError message={errorMessage} onRetry={handleRetry} />}
 
       {/* Controls Overlay */}
       {!hasError && (
@@ -369,3 +510,4 @@ export function DirectVideoPlayer({
     </div>
   );
 }
+

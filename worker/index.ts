@@ -114,10 +114,12 @@ export class RoomDurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    // Extract roomId from path (e.g., /api/room/:roomId/ws or /ws)
-    const pathParts = url.pathname.split('/').filter(Boolean);
-    if (pathParts[1]) {
-      this.roomId = pathParts[1];
+    // Extract roomId from path (e.g., /api/room/:roomId/ws or /ws/:roomId)
+    const match = url.pathname.match(/\/(?:api\/room|ws)\/([a-zA-Z0-9_-]+)/);
+    if (match && match[1]) {
+      this.roomId = match[1];
+    } else if (url.searchParams.get('roomId')) {
+      this.roomId = url.searchParams.get('roomId')!;
     }
 
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {

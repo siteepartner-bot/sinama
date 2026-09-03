@@ -5,6 +5,13 @@ export interface LocalVideoPlayerProps {
   key?: React.Key;
   fileOrBlobUrl: string | File | Blob;
   fileName?: string;
+  initialPlayState?: boolean;
+  targetTime?: number;
+  updatedAt?: number;
+  playbackRate?: number;
+  onPlayChange?: (isPlaying: boolean, currentTime: number) => void;
+  onSeekChange?: (time: number) => void;
+  onRateChange?: (rate: number) => void;
   onEnded?: () => void;
   onError?: (err: string) => void;
 }
@@ -12,6 +19,13 @@ export interface LocalVideoPlayerProps {
 export function LocalVideoPlayer({
   fileOrBlobUrl,
   fileName = 'فایل ویدیوی محلی',
+  initialPlayState = true,
+  targetTime = 0,
+  updatedAt = 0,
+  playbackRate = 1,
+  onPlayChange,
+  onSeekChange,
+  onRateChange,
   onEnded,
   onError,
 }: LocalVideoPlayerProps) {
@@ -44,7 +58,13 @@ export function LocalVideoPlayer({
       key={objectUrl}
       src={objectUrl}
       title={fileName}
-      initialPlayState={true}
+      initialPlayState={initialPlayState}
+      targetTime={targetTime}
+      updatedAt={updatedAt}
+      playbackRate={playbackRate}
+      onPlayChange={onPlayChange}
+      onSeekChange={onSeekChange}
+      onRateChange={onRateChange}
       onEnded={onEnded}
       onError={onError}
     />

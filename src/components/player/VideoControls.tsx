@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Pause, PictureInPicture2 } from 'lucide-react';
+import { Play, Pause, PictureInPicture2, RotateCcw, RotateCw } from 'lucide-react';
 import { ProgressBar } from './ProgressBar';
 import { VolumeControl } from './VolumeControl';
 import { QualityMenu } from './QualityMenu';
@@ -91,14 +91,25 @@ export function VideoControls({
 
             {/* Actions Bar */}
             <div className="flex items-center justify-between text-zinc-100">
-              {/* Left Group (Play, Time, Volume) */}
-              <div className="flex items-center gap-3 md:gap-4">
+              {/* Left Group (Play, Skip, Time, Volume) */}
+              <div className="flex items-center gap-2 sm:gap-3 md:gap-4">
+                {/* Skip Backward 10s */}
+                <button
+                  type="button"
+                  onClick={() => onSeek(Math.max(0, currentTime - 10))}
+                  className="p-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/80 transition-all cursor-pointer active:scale-95"
+                  title="۱۰ ثانیه عقب (کلید J یا جهت چپ)"
+                  id="btn-skip-backward-10"
+                >
+                  <RotateCcw className="h-4.5 w-4.5" />
+                </button>
+
                 {/* Play / Pause Toggle */}
                 <button
                   type="button"
                   onClick={onTogglePlay}
                   className="p-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white transition-all cursor-pointer shadow-md shadow-rose-500/20 active:scale-95"
-                  title={isPlaying ? 'توقف موقت (Space)' : 'پخش (Space)'}
+                  title={isPlaying ? 'توقف موقت (Space / K)' : 'پخش (Space / K)'}
                   id="btn-play-pause"
                 >
                   {isPlaying ? (
@@ -106,6 +117,17 @@ export function VideoControls({
                   ) : (
                     <Play className="h-5 w-5 fill-white ml-0.5" />
                   )}
+                </button>
+
+                {/* Skip Forward 10s */}
+                <button
+                  type="button"
+                  onClick={() => onSeek(Math.min(duration || Infinity, currentTime + 10))}
+                  className="p-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/80 transition-all cursor-pointer active:scale-95"
+                  title="۱۰ ثانیه جلو (کلید L یا جهت راست)"
+                  id="btn-skip-forward-10"
+                >
+                  <RotateCw className="h-4.5 w-4.5" />
                 </button>
 
                 {/* Current / Duration Time */}

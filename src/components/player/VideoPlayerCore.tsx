@@ -148,6 +148,7 @@ export function VideoPlayerCore({
           title={mediaState.title || 'ویدیوی مستقیم'}
           initialPlayState={mediaState.isPlaying}
           targetTime={mediaState.currentTime || 0}
+          updatedAt={mediaState.updatedAt}
           playbackRate={mediaState.playbackRate || 1}
           onPlayChange={onPlayChange}
           onSeekChange={onSeekChange}
@@ -162,6 +163,13 @@ export function VideoPlayerCore({
           key={`local_${mediaState.sourceUrl || mediaState.fileName}`}
           fileOrBlobUrl={mediaState.sourceUrl}
           fileName={mediaState.fileName || mediaState.title || 'فایل ویدیوی سیستم'}
+          initialPlayState={mediaState.isPlaying}
+          targetTime={mediaState.currentTime || 0}
+          updatedAt={mediaState.updatedAt}
+          playbackRate={mediaState.playbackRate || 1}
+          onPlayChange={onPlayChange}
+          onSeekChange={onSeekChange}
+          onRateChange={onRateChange}
           onEnded={onEnded}
         />
       )}
