@@ -53,7 +53,10 @@ export function DirectVideoPlayer({
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
   // Prevent programmatic remote updates from looping back as local events
-  const isProgrammaticUpdate = useRef<boolean>(false);
+  const suppressPlayBroadcast = useRef<number>(0);
+  const suppressPauseBroadcast = useRef<number>(0);
+  const suppressSeekBroadcast = useRef<number>(0);
+  const suppressRateBroadcast = useRef<number>(0);
   const lastHandledUpdatedAt = useRef<number>(updatedAt);
 
   // Auto hide controls
@@ -88,16 +91,23 @@ export function DirectVideoPlayer({
     }, 2500);
   }, []);
 
-  // 1. Synchronize remote play/pause state
+  // Synchronize remote play, pause, seek, and rate changes
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    if (initialPlayState) {
-      if (video.paused) {
-        isProgrammaticUpdate.current = true;
-        // Correct time drift if targetTime is specified
+    const isNewEvent = updatedAt && updatedAt !== lastHandledUpdatedAt.current;
+    if (isNewEvent) {
+      lastHandledUpdatedAt.current = updatedAt;
+    }
+
+    // 1. Play / Pause Synchronization
+    if (initialPlayState !== undefined) {
+      if (initialPlayState && video.paused) {
+        suppressPlayBroadcast.current++;
+        // If targetTime specified and drift > 0.4s, align time too
         if (targetTime !== undefined && Math.abs(video.currentTime - targetTime) > 0.4) {
+          suppressSeekBroadcast.current++;
           video.currentTime = targetTime;
           setCurrentTime(targetTime);
         }
@@ -109,8 +119,8 @@ export function DirectVideoPlayer({
             setAutoplayBlocked(false);
           })
           .catch((err) => {
-            console.warn('Autoplay blocked or play failed, attempting muted fallback:', err);
-            // Fallback: play muted to maintain sync
+            console.warn('Autoplay blocked, falling back to muted playback:', err);
+            suppressPlayBroadcast.current++;
             video.muted = true;
             setIsMuted(true);
             video
@@ -122,62 +132,36 @@ export function DirectVideoPlayer({
               .catch(() => {
                 setIsPlaying(false);
               });
-          })
-          .finally(() => {
-            setTimeout(() => {
-              isProgrammaticUpdate.current = false;
-            }, 120);
           });
-      }
-    } else {
-      if (!video.paused) {
-        isProgrammaticUpdate.current = true;
+      } else if (!initialPlayState && !video.paused) {
+        suppressPauseBroadcast.current++;
         video.pause();
         setIsPlaying(false);
-        if (targetTime !== undefined && Math.abs(video.currentTime - targetTime) > 0.2) {
+        if (targetTime !== undefined && Math.abs(video.currentTime - targetTime) > 0.3) {
+          suppressSeekBroadcast.current++;
           video.currentTime = targetTime;
           setCurrentTime(targetTime);
         }
-        setTimeout(() => {
-          isProgrammaticUpdate.current = false;
-        }, 120);
       }
     }
-  }, [initialPlayState, targetTime]);
 
-  // 2. Synchronize remote seek target time & updates
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const isNewEvent = updatedAt && updatedAt !== lastHandledUpdatedAt.current;
-    if (isNewEvent) {
-      lastHandledUpdatedAt.current = updatedAt;
-    }
-
-    const drift = Math.abs(video.currentTime - targetTime);
-    // Align if explicit new event or noticeable drift > 0.5s
-    if (isNewEvent || drift > 0.5) {
-      isProgrammaticUpdate.current = true;
-      video.currentTime = targetTime;
-      setCurrentTime(targetTime);
-
-      if (initialPlayState && video.paused) {
-        video.play().catch(() => {});
+    // 2. Explicit remote seek event
+    if (isNewEvent && targetTime !== undefined) {
+      const drift = Math.abs(video.currentTime - targetTime);
+      if (drift > 0.3) {
+        suppressSeekBroadcast.current++;
+        video.currentTime = targetTime;
+        setCurrentTime(targetTime);
       }
-
-      setTimeout(() => {
-        isProgrammaticUpdate.current = false;
-      }, 120);
     }
-  }, [targetTime, updatedAt, initialPlayState]);
 
-  // 3. Synchronize remote playback rate
-  useEffect(() => {
-    if (externalPlaybackRate && externalPlaybackRate !== playbackRate) {
+    // 3. Playback rate synchronization
+    if (externalPlaybackRate && Math.abs(video.playbackRate - externalPlaybackRate) > 0.05) {
+      suppressRateBroadcast.current++;
+      video.playbackRate = externalPlaybackRate;
       setPlaybackRate(externalPlaybackRate);
     }
-  }, [externalPlaybackRate, playbackRate]);
+  }, [initialPlayState, updatedAt, targetTime, externalPlaybackRate]);
 
   // Fullscreen change listener
   useEffect(() => {
@@ -196,14 +180,7 @@ export function DirectVideoPlayer({
     }
   }, [volume, isMuted]);
 
-  // Update playback rate
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.playbackRate = playbackRate;
-    }
-  }, [playbackRate]);
-
-  // Handle Play/Pause by local user
+  // Handle Play/Pause by local user action
   const handleTogglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -214,31 +191,16 @@ export function DirectVideoPlayer({
     }
 
     if (video.paused) {
-      video
-        .play()
-        .then(() => {
-          setIsPlaying(true);
-          setAutoplayBlocked(false);
-          if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
-            onPlayChange?.(true, video.currentTime);
-            showFeedbackToast('پخش برای همه همگام شد');
-          }
-        })
-        .catch((e) => {
-          console.warn('Autoplay blocked or play failed', e);
-          setIsPlaying(false);
-        });
+      video.play().catch((e) => {
+        console.warn('Play request failed:', e);
+        setIsPlaying(false);
+      });
     } else {
       video.pause();
-      setIsPlaying(false);
-      if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
-        onPlayChange?.(false, video.currentTime);
-        showFeedbackToast('توقف برای همه همگام شد');
-      }
     }
-  }, [isEnded, onPlayChange, showFeedbackToast]);
+  }, [isEnded]);
 
-  // Handle Seek by local user
+  // Handle Seek by local user action
   const handleSeek = useCallback((time: number) => {
     const video = videoRef.current;
     if (!video) return;
@@ -247,20 +209,15 @@ export function DirectVideoPlayer({
     video.currentTime = clampedTime;
     setCurrentTime(clampedTime);
     setIsEnded(false);
+  }, [duration]);
 
-    if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
-      onSeekChange?.(clampedTime);
-      showFeedbackToast(`تغییر زمان برای همه همگام شد`);
-    }
-  }, [duration, onSeekChange, showFeedbackToast]);
-
-  // Handle Playback Rate change by local user
+  // Handle Playback Rate change by local user action
   const handlePlaybackRateChange = useCallback((rate: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.playbackRate = rate;
     setPlaybackRate(rate);
-    if (!isProgrammaticUpdate.current && !realTimeClient.isRemoteEventActive) {
-      onRateChange?.(rate);
-    }
-  }, [onRateChange]);
+  }, []);
 
   // Handle Volume
   const handleVolumeChange = (newVol: number) => {
@@ -387,18 +344,78 @@ export function DirectVideoPlayer({
   };
 
   const onWaiting = () => setIsBuffering(true);
+
   const onPlaying = () => {
     setIsBuffering(false);
     setIsPlaying(true);
+    setAutoplayBlocked(false);
+
+    if (suppressPlayBroadcast.current > 0) {
+      suppressPlayBroadcast.current--;
+      return;
+    }
+
+    if (!realTimeClient.isRemoteEventActive) {
+      const video = videoRef.current;
+      const time = video ? video.currentTime : currentTime;
+      onPlayChange?.(true, time);
+      showFeedbackToast('پخش برای همه همگام شد');
+    }
   };
+
   const onPause = () => {
     setIsPlaying(false);
+
+    if (suppressPauseBroadcast.current > 0) {
+      suppressPauseBroadcast.current--;
+      return;
+    }
+
+    if (!realTimeClient.isRemoteEventActive && !videoRef.current?.ended) {
+      const video = videoRef.current;
+      const time = video ? video.currentTime : currentTime;
+      onPlayChange?.(false, time);
+      showFeedbackToast('توقف برای همه همگام شد');
+    }
+  };
+
+  const onSeeked = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    setCurrentTime(video.currentTime);
+
+    if (suppressSeekBroadcast.current > 0) {
+      suppressSeekBroadcast.current--;
+      return;
+    }
+
+    if (!realTimeClient.isRemoteEventActive) {
+      onSeekChange?.(video.currentTime);
+      showFeedbackToast('تغییر زمان برای همه همگام شد');
+    }
+  };
+
+  const onRateChangeInternal = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    setPlaybackRate(video.playbackRate);
+
+    if (suppressRateBroadcast.current > 0) {
+      suppressRateBroadcast.current--;
+      return;
+    }
+
+    if (!realTimeClient.isRemoteEventActive) {
+      onRateChange?.(video.playbackRate);
+    }
   };
 
   const onVideoEnded = () => {
     setIsPlaying(false);
     setIsEnded(true);
-    onEnded?.();
+    if (!realTimeClient.isRemoteEventActive) {
+      onEnded?.();
+    }
   };
 
   const onVideoError = () => {
@@ -446,6 +463,8 @@ export function DirectVideoPlayer({
         onWaiting={onWaiting}
         onPlaying={onPlaying}
         onPause={onPause}
+        onSeeked={onSeeked}
+        onRateChange={onRateChangeInternal}
         onEnded={onVideoEnded}
         onError={onVideoError}
         onClick={handleTogglePlay}

@@ -585,10 +585,30 @@ class DurableRoomService implements IRoomService {
     return { room: newRoom, currentUser: hostUser };
   }
 
+  private getDriftCorrectedRoom(room: Room): Room {
+    if (!room) return room;
+    const media = room.mediaState;
+    if (media && media.isPlaying && media.updatedAt) {
+      const elapsed = (Date.now() - media.updatedAt) / 1000;
+      const rate = media.playbackRate || 1;
+      const dur = media.duration > 0 ? media.duration : Infinity;
+      const correctedTime = Math.min(dur, Math.max(0, (media.currentTime || 0) + elapsed * rate));
+      return {
+        ...room,
+        mediaState: {
+          ...media,
+          currentTime: correctedTime
+        }
+      };
+    }
+    return room;
+  }
+
   async getRoom(roomId: string): Promise<Room | null> {
     if (!roomId) return null;
     const rooms = this.getRoomsMap();
-    return rooms[roomId.trim()] || null;
+    const room = rooms[roomId.trim()];
+    return room ? this.getDriftCorrectedRoom(room) : null;
   }
 
   async joinRoom(roomId: string, userName: string, autoCreateIfNotFound = false): Promise<{ room: Room; currentUser: RoomUser }> {

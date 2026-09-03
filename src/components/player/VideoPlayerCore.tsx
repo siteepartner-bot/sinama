@@ -124,8 +124,10 @@ export function VideoPlayerCore({
           volume={0.9}
           currentTime={mediaState.currentTime || 0}
           playbackRate={mediaState.playbackRate || 1}
+          updatedAt={mediaState.updatedAt}
           onPlayChange={onPlayChange}
           onSeekChange={onSeekChange}
+          onRateChange={onRateChange}
           onEnded={onEnded}
         />
       )}

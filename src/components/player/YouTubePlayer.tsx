@@ -3,6 +3,13 @@ import { Loader2 } from 'lucide-react';
 import { VideoError } from './VideoError';
 import { realTimeClient } from '../../services/realtimeClient';
 
+declare global {
+  interface Window {
+    YT?: any;
+    onYouTubeIframeAPIReady?: () => void;
+  }
+}
+
 export interface YouTubePlayerProps {
   key?: React.Key;
   videoId: string;
@@ -11,8 +18,10 @@ export interface YouTubePlayerProps {
   volume?: number;
   currentTime?: number;
   playbackRate?: number;
+  updatedAt?: number;
   onPlayChange?: (isPlaying: boolean, currentTime: number) => void;
   onSeekChange?: (time: number) => void;
+  onRateChange?: (rate: number) => void;
   onEnded?: () => void;
   onError?: (err: string) => void;
 }
@@ -24,61 +33,237 @@ export function YouTubePlayer({
   volume = 0.9,
   currentTime = 0,
   playbackRate = 1,
+  updatedAt = 0,
   onPlayChange,
   onSeekChange,
+  onRateChange,
   onEnded,
   onError,
 }: YouTubePlayerProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const isProgrammatic = useRef<boolean>(false);
+  const containerId = useRef(`yt_player_${Math.random().toString(36).slice(2, 9)}`);
+  const playerRef = useRef<any>(null);
+  const isApiReadyRef = useRef<boolean>(false);
+  const suppressBroadcast = useRef<number>(0);
+  const lastHandledUpdatedAt = useRef<number>(updatedAt);
+  const lastKnownTime = useRef<number>(currentTime);
 
   useEffect(() => {
     setIsLoading(true);
     setHasError(false);
   }, [videoId]);
 
-  // Send postMessage to YouTube IFrame player API
-  const sendIframeCommand = (func: string, args: any[] = []) => {
-    if (!iframeRef.current || !iframeRef.current.contentWindow) return;
+  // Load YouTube IFrame API Script
+  useEffect(() => {
+    if (!videoId) return;
+
+    let isMounted = true;
+
+    const initPlayer = () => {
+      if (!isMounted || !window.YT || !window.YT.Player) return;
+
+      // Clean up previous instance
+      if (playerRef.current && typeof playerRef.current.destroy === 'function') {
+        try {
+          playerRef.current.destroy();
+        } catch {
+          // Ignore
+        }
+        playerRef.current = null;
+      }
+
+      try {
+        playerRef.current = new window.YT.Player(containerId.current, {
+          videoId,
+          playerVars: {
+            autoplay: isPlaying ? 1 : 0,
+            start: Math.floor(currentTime),
+            enablejsapi: 1,
+            modestbranding: 1,
+            rel: 0,
+            playsinline: 1,
+            origin: typeof window !== 'undefined' ? window.location.origin : ''
+          },
+          events: {
+            onReady: (event: any) => {
+              if (!isMounted) return;
+              isApiReadyRef.current = true;
+              setIsLoading(false);
+              event.target.setVolume(Math.round(volume * 100));
+              if (isMuted) {
+                event.target.mute();
+              }
+              if (playbackRate && playbackRate !== 1) {
+                event.target.setPlaybackRate(playbackRate);
+              }
+              if (isPlaying) {
+                suppressBroadcast.current++;
+                event.target.playVideo();
+              }
+            },
+            onStateChange: (event: any) => {
+              if (!isMounted) return;
+              const state = event.data;
+              const player = event.target;
+
+              // 1 = PLAYING, 2 = PAUSED, 0 = ENDED
+              if (state === 1) {
+                const cur = player.getCurrentTime ? player.getCurrentTime() : currentTime;
+                lastKnownTime.current = cur;
+
+                if (suppressBroadcast.current > 0) {
+                  suppressBroadcast.current--;
+                  return;
+                }
+
+                if (!realTimeClient.isRemoteEventActive) {
+                  onPlayChange?.(true, cur);
+                }
+              } else if (state === 2) {
+                const cur = player.getCurrentTime ? player.getCurrentTime() : currentTime;
+                lastKnownTime.current = cur;
+
+                if (suppressBroadcast.current > 0) {
+                  suppressBroadcast.current--;
+                  return;
+                }
+
+                if (!realTimeClient.isRemoteEventActive) {
+                  onPlayChange?.(false, cur);
+                }
+              } else if (state === 0) {
+                if (!realTimeClient.isRemoteEventActive) {
+                  onEnded?.();
+                }
+              }
+            },
+            onPlaybackRateChange: (event: any) => {
+              if (!isMounted) return;
+              if (suppressBroadcast.current > 0) {
+                suppressBroadcast.current--;
+                return;
+              }
+              if (!realTimeClient.isRemoteEventActive) {
+                onRateChange?.(event.data);
+              }
+            },
+            onError: () => {
+              if (!isMounted) return;
+              setIsLoading(false);
+              setHasError(true);
+              onError?.('خطا در بارگذاری پلیر یوتیوب');
+            }
+          }
+        });
+      } catch (err) {
+        console.warn('Failed to initialize YT Player API:', err);
+        setIsLoading(false);
+      }
+    };
+
+    if (window.YT && window.YT.Player) {
+      initPlayer();
+    } else {
+      if (!window.onYouTubeIframeAPIReady) {
+        const tag = document.createElement('script');
+        tag.src = 'https://www.youtube.com/iframe_api';
+        const firstScriptTag = document.getElementsByTagName('script')[0];
+        firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
+      }
+
+      const existingCallback = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => {
+        if (existingCallback) existingCallback();
+        if (isMounted) initPlayer();
+      };
+    }
+
+    return () => {
+      isMounted = false;
+      if (playerRef.current && typeof playerRef.current.destroy === 'function') {
+        try {
+          playerRef.current.destroy();
+        } catch {
+          // Ignore
+        }
+        playerRef.current = null;
+      }
+    };
+  }, [videoId]);
+
+  // Synchronize remote play/pause state
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player || !isApiReadyRef.current) return;
+
     try {
-      iframeRef.current.contentWindow.postMessage(
-        JSON.stringify({
-          event: 'command',
-          func,
-          args
-        }),
-        '*'
-      );
+      const state = typeof player.getPlayerState === 'function' ? player.getPlayerState() : -1;
+      if (isPlaying && state !== 1 && state !== 3) {
+        suppressBroadcast.current++;
+        player.playVideo();
+      } else if (!isPlaying && state === 1) {
+        suppressBroadcast.current++;
+        player.pauseVideo();
+      }
     } catch {
       // Ignore
     }
-  };
+  }, [isPlaying]);
 
-  // Sync play/pause commands to iframe
+  // Synchronize remote seek / targetTime updates
   useEffect(() => {
-    if (isLoading || hasError) return;
-    isProgrammatic.current = true;
-    if (isPlaying) {
-      sendIframeCommand('playVideo');
-    } else {
-      sendIframeCommand('pauseVideo');
+    const player = playerRef.current;
+    if (!player || !isApiReadyRef.current) return;
+
+    const isNewEvent = updatedAt && updatedAt !== lastHandledUpdatedAt.current;
+    if (isNewEvent) {
+      lastHandledUpdatedAt.current = updatedAt;
     }
-    setTimeout(() => {
-      isProgrammatic.current = false;
-    }, 150);
-  }, [isPlaying, isLoading, hasError]);
 
-  // Sync seek command to iframe
+    if (isNewEvent && currentTime !== undefined) {
+      try {
+        const curr = typeof player.getCurrentTime === 'function' ? player.getCurrentTime() : 0;
+        if (Math.abs(curr - currentTime) > 0.5) {
+          suppressBroadcast.current++;
+          player.seekTo(currentTime, true);
+          lastKnownTime.current = currentTime;
+        }
+      } catch {
+        // Ignore
+      }
+    }
+  }, [currentTime, updatedAt]);
+
+  // Synchronize playback rate
   useEffect(() => {
-    if (isLoading || hasError || currentTime <= 0) return;
-    isProgrammatic.current = true;
-    sendIframeCommand('seekTo', [currentTime, true]);
-    setTimeout(() => {
-      isProgrammatic.current = false;
-    }, 150);
-  }, [currentTime, isLoading, hasError]);
+    const player = playerRef.current;
+    if (!player || !isApiReadyRef.current) return;
+    try {
+      if (typeof player.setPlaybackRate === 'function') {
+        suppressBroadcast.current++;
+        player.setPlaybackRate(playbackRate);
+      }
+    } catch {
+      // Ignore
+    }
+  }, [playbackRate]);
+
+  // Synchronize volume and mute
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player || !isApiReadyRef.current) return;
+    try {
+      if (isMuted) {
+        player.mute();
+      } else {
+        player.unMute();
+        player.setVolume(Math.round(volume * 100));
+      }
+    } catch {
+      // Ignore
+    }
+  }, [volume, isMuted]);
 
   if (!videoId) {
     return (
@@ -101,44 +286,17 @@ export function YouTubePlayer({
     );
   }
 
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const embedParams = new URLSearchParams({
-    enablejsapi: '1',
-    autoplay: isPlaying ? '1' : '0',
-    mute: isMuted ? '1' : '0',
-    rel: '0',
-    modestbranding: '1',
-    playsinline: '1',
-    ...(currentTime > 0 ? { start: Math.floor(currentTime).toString() } : {}),
-    ...(origin ? { origin } : {})
-  });
-
-  const embedUrl = `https://www.youtube.com/embed/${videoId}?${embedParams.toString()}`;
-
   return (
     <div className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden" id="youtube-player-container">
       {isLoading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-10 pointer-events-none">
           <Loader2 className="h-8 w-8 text-rose-500 animate-spin mb-2" />
-          <span className="text-xs text-zinc-400">در حال بارگذاری پلیر یوتیوب...</span>
+          <span className="text-xs text-zinc-400">در حال اتصال و همگام‌سازی با یوتیوب...</span>
         </div>
       )}
 
-      <iframe
-        ref={iframeRef}
-        key={`yt_${videoId}`}
-        src={embedUrl}
-        title="YouTube Video Player"
-        onLoad={() => setIsLoading(false)}
-        onError={() => {
-          setIsLoading(false);
-          setHasError(true);
-          onError?.('خطا در بارگذاری پلیر یوتیوب');
-        }}
-        className="w-full h-full border-0 pointer-events-auto"
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-        allowFullScreen
-      />
+      {/* Target container for YouTube IFrame API */}
+      <div id={containerId.current} className="w-full h-full pointer-events-auto" />
     </div>
   );
 }

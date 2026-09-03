@@ -54,20 +54,15 @@ export function ProgressBar({
     const onWindowMouseMove = (moveEvent: MouseEvent) => {
       const time = calculateTargetTime(moveEvent.clientX);
       setDragTime(time);
-
-      // Throttle intermediate emits during drag to 150ms
-      const now = Date.now();
-      if (now - lastEmitTimeRef.current > 150) {
-        lastEmitTimeRef.current = now;
-        onSeek(time);
-      }
+      // Strictly visual during drag: do not emit intermediate seek events to reduce WebSocket traffic
     };
 
     const onWindowMouseUp = (upEvent: MouseEvent) => {
       setIsDragging(false);
       const finalTime = calculateTargetTime(upEvent.clientX);
       setDragTime(null);
-      onSeek(finalTime); // Final authoritative seek commit
+      // Final authoritative seek event
+      onSeek(finalTime);
 
       window.removeEventListener('mousemove', onWindowMouseMove);
       window.removeEventListener('mouseup', onWindowMouseUp);
