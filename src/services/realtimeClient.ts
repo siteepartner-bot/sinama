@@ -137,6 +137,14 @@ export class RealTimeClient {
    * Sends a typed client message to the server & multi-tab channel
    */
   public sendMessage(message: ClientMessage): void {
+    if (message.type !== 'PING') {
+      console.log('[WS SEND]', {
+        eventType: message.type,
+        senderId: 'senderId' in message ? message.senderId : undefined,
+        message
+      });
+    }
+
     // 1. Send via WebSocket if open
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
@@ -149,6 +157,10 @@ export class RealTimeClient {
     // 2. Broadcast via BroadcastChannel to other local tabs
     if (this.broadcastChannel && message.type !== 'PING') {
       try {
+        console.log('[BROADCAST]', {
+          eventType: message.type,
+          recipientCount: 'cross-tab-bus'
+        });
         this.broadcastChannel.postMessage(message);
       } catch (err) {
         console.warn('BroadcastChannel error:', err);
@@ -396,6 +408,13 @@ export class RealTimeClient {
     }
 
     if (message.type === 'PONG') return;
+
+    console.log('[ROOM EVENT RECEIVED]', {
+      eventType: message.type,
+      senderId: 'senderId' in message ? message.senderId : undefined,
+      source,
+      message
+    });
 
     // Set lock flag to signal components that this is a remote update
     this.isRemoteEventActive = true;

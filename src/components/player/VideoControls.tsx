@@ -80,27 +80,15 @@ export function VideoControls({
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Permission Badge */}
-              {allowAnyoneControl ? (
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/20 backdrop-blur-md rounded-full border border-emerald-500/30 text-[11px] font-medium text-emerald-300">
-                  <Users className="h-3 w-3 text-emerald-400" />
-                  <span>کنترل آزاد برای همه</span>
-                </div>
-              ) : isHost ? (
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/20 backdrop-blur-md rounded-full border border-amber-500/30 text-[11px] font-medium text-amber-300">
-                  <Crown className="h-3 w-3 text-amber-400" />
-                  <span>کنترل فقط دست شما (میزبان)</span>
-                </div>
-              ) : (
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-rose-500/20 backdrop-blur-md rounded-full border border-rose-500/30 text-[11px] font-medium text-rose-300">
-                  <Lock className="h-3 w-3 text-rose-400" />
-                  <span>کنترل فقط توسط مالک اتاق</span>
-                </div>
-              )}
+              {/* Permission Badge (ALL_ROOM_MEMBERS_CAN_CONTROL_MEDIA) */}
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/20 backdrop-blur-md rounded-full border border-emerald-500/30 text-[11px] font-medium text-emerald-300">
+                <Users className="h-3 w-3 text-emerald-400" />
+                <span>کنترل آزاد برای همه</span>
+              </div>
 
               <div className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 bg-black/50 backdrop-blur-md rounded-full border border-zinc-800 text-[11px] font-medium text-zinc-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                <span>پخش زنده اختصاصی</span>
+                <span>پخش زنده همگام</span>
               </div>
             </div>
           </div>
@@ -113,7 +101,7 @@ export function VideoControls({
               duration={duration}
               bufferedTime={bufferedTime}
               onSeek={onSeek}
-              disabled={!canControlVideo}
+              disabled={false}
             />
 
             {/* Actions Bar */}
@@ -123,14 +111,9 @@ export function VideoControls({
                 {/* Skip Backward 10s */}
                 <button
                   type="button"
-                  onClick={() => canControlVideo && onSeek(Math.max(0, currentTime - 10))}
-                  disabled={!canControlVideo}
-                  className={`p-1.5 rounded-lg transition-all ${
-                    canControlVideo
-                      ? 'text-zinc-300 hover:text-white hover:bg-zinc-800/80 cursor-pointer active:scale-95'
-                      : 'text-zinc-600 cursor-not-allowed opacity-50'
-                  }`}
-                  title={canControlVideo ? '۱۰ ثانیه عقب (کلید J یا جهت چپ)' : 'کنترل ویدیو در انحصار مالک اتاق است'}
+                  onClick={() => onSeek(Math.max(0, currentTime - 10))}
+                  className="p-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/80 cursor-pointer active:scale-95 transition-all"
+                  title="۱۰ ثانیه عقب (کلید J یا جهت چپ)"
                   id="btn-skip-backward-10"
                 >
                   <RotateCcw className="h-4.5 w-4.5" />
@@ -139,25 +122,12 @@ export function VideoControls({
                 {/* Play / Pause Toggle */}
                 <button
                   type="button"
-                  onClick={() => canControlVideo && onTogglePlay()}
-                  disabled={!canControlVideo}
-                  className={`p-2 rounded-xl transition-all shadow-md ${
-                    canControlVideo
-                      ? 'bg-rose-500 hover:bg-rose-600 text-white cursor-pointer shadow-rose-500/20 active:scale-95'
-                      : 'bg-zinc-800 text-zinc-500 cursor-not-allowed shadow-none opacity-60'
-                  }`}
-                  title={
-                    !canControlVideo
-                      ? 'کنترل ویدیو توسط مالک محدود شده است'
-                      : isPlaying
-                      ? 'توقف موقت (Space / K)'
-                      : 'پخش (Space / K)'
-                  }
+                  onClick={onTogglePlay}
+                  className="p-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white cursor-pointer shadow-md shadow-rose-500/20 active:scale-95 transition-all"
+                  title={isPlaying ? 'توقف موقت (Space / K)' : 'پخش (Space / K)'}
                   id="btn-play-pause"
                 >
-                  {!canControlVideo ? (
-                    <Lock className="h-4.5 w-4.5 text-zinc-400" />
-                  ) : isPlaying ? (
+                  {isPlaying ? (
                     <Pause className="h-5 w-5" />
                   ) : (
                     <Play className="h-5 w-5 fill-white ml-0.5" />
@@ -167,14 +137,9 @@ export function VideoControls({
                 {/* Skip Forward 10s */}
                 <button
                   type="button"
-                  onClick={() => canControlVideo && onSeek(Math.min(duration || Infinity, currentTime + 10))}
-                  disabled={!canControlVideo}
-                  className={`p-1.5 rounded-lg transition-all ${
-                    canControlVideo
-                      ? 'text-zinc-300 hover:text-white hover:bg-zinc-800/80 cursor-pointer active:scale-95'
-                      : 'text-zinc-600 cursor-not-allowed opacity-50'
-                  }`}
-                  title={canControlVideo ? '۱۰ ثانیه جلو (کلید L یا جهت راست)' : 'کنترل ویدیو در انحصار مالک اتاق است'}
+                  onClick={() => onSeek(Math.min(duration || Infinity, currentTime + 10))}
+                  className="p-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/80 cursor-pointer active:scale-95 transition-all"
+                  title="۱۰ ثانیه جلو (کلید L یا جهت راست)"
                   id="btn-skip-forward-10"
                 >
                   <RotateCw className="h-4.5 w-4.5" />

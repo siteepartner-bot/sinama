@@ -117,64 +117,16 @@ export function RoomHeader() {
 
       {/* Control Actions & Permission Switch */}
       <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end flex-wrap">
-        {/* Host Video Control Permission Toggle or Member Status Badge */}
-        {isHost ? (
-          <button
-            type="button"
-            onClick={toggleRoomControlPermission}
-            className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer shadow-sm active:scale-95 ${
-              allowAnyoneControl
-                ? 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/30'
-                : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/30'
-            }`}
-            id="btn-toggle-video-permission"
-            title={
-              allowAnyoneControl
-                ? 'کنترل برای همه اعضا باز است. برای محدود کردن کنترل به میزبان کلیک کنید.'
-                : 'کنترل فقط در انحصار میزبان است. برای باز کردن کنترل به همه اعضا کلیک کنید.'
-            }
-          >
-            {allowAnyoneControl ? (
-              <>
-                <Unlock className="h-3.5 w-3.5 text-emerald-400" />
-                <span>کنترل ویدیو:</span>
-                <span className="text-emerald-300 font-bold">آزاد برای همه</span>
-              </>
-            ) : (
-              <>
-                <Lock className="h-3.5 w-3.5 text-amber-400" />
-                <span>کنترل ویدیو:</span>
-                <span className="text-amber-300 font-bold">فقط مالک</span>
-              </>
-            )}
-          </button>
-        ) : (
-          <div
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border ${
-              allowAnyoneControl
-                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
-                : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-            }`}
-            id="badge-video-permission-status"
-            title={
-              allowAnyoneControl
-                ? 'شما و همه اعضا اجازه کنترل ویدیو را دارید.'
-                : 'کنترل ویدیو توسط مالک محدود شده است.'
-            }
-          >
-            {allowAnyoneControl ? (
-              <>
-                <Users className="h-3.5 w-3.5 text-emerald-400" />
-                <span>کنترل همگانی آزاد</span>
-              </>
-            ) : (
-              <>
-                <Lock className="h-3.5 w-3.5 text-amber-400" />
-                <span>کنترل فقط توسط مالک</span>
-              </>
-            )}
-          </div>
-        )}
+        {/* Equal Video Control Permission Badge (ALL_ROOM_MEMBERS_CAN_CONTROL_MEDIA) */}
+        <div
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm select-none"
+          id="badge-video-permission-status"
+          title="تمام اعضای اتاق (میزبان و اعضا) دسترسی کامل و برابر برای کنترل ویدیو دارند"
+        >
+          <Users className="h-3.5 w-3.5 text-emerald-400" />
+          <span>کنترل ویدیو:</span>
+          <span className="font-bold">آزاد برای همه</span>
+        </div>
 
         {/* Copy Link Button */}
         <div className="relative">

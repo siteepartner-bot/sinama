@@ -218,10 +218,10 @@ export class RoomDurableObject {
     return this.room;
   }
 
-  private canUserControlMedia(senderId: string): boolean {
+  private canUserControlMedia(_senderId: string): boolean {
     if (!this.room) return false;
-    if (this.room.allowAnyoneControl !== false) return true;
-    return senderId === this.room.hostId;
+    // ALL_ROOM_MEMBERS_CAN_CONTROL_MEDIA: Every room member has equal permission to control media
+    return true;
   }
 
   private async handleClientMessage(senderWs: WebSocket, message: ClientMessage): Promise<void> {
@@ -253,8 +253,13 @@ export class RoomDurableObject {
             mediaState: getDefaultMediaState(),
             allowAnyoneControl: true
           };
+          user.isHost = true;
+          user.role = 'host';
+          user.canControlMedia = true;
         } else {
           // Add or update user in room
+          user.canControlMedia = true;
+          user.role = this.room.hostId === user.userId ? 'host' : 'member';
           const existingIndex = this.room.users.findIndex((u) => u.userId === user.userId);
           if (existingIndex >= 0) {
             this.room.users[existingIndex] = { ...this.room.users[existingIndex], ...user, isOnline: true };
@@ -263,6 +268,8 @@ export class RoomDurableObject {
           }
           if (!this.room.hostId) {
             this.room.hostId = user.userId;
+            this.room.users[0].isHost = true;
+            this.room.users[0].role = 'host';
           }
         }
 
@@ -294,6 +301,12 @@ export class RoomDurableObject {
 
       case 'VIDEO_PLAY': {
         if (!this.room || !this.canUserControlMedia(message.senderId)) return;
+        console.log('[DURABLE OBJECT ACCEPTED EVENT]', {
+          senderId: message.senderId,
+          isHost: this.room?.hostId === message.senderId,
+          eventType: message.type
+        });
+
         this.room.mediaState = {
           ...this.room.mediaState,
           isPlaying: true,
@@ -320,6 +333,12 @@ export class RoomDurableObject {
 
       case 'VIDEO_PAUSE': {
         if (!this.room || !this.canUserControlMedia(message.senderId)) return;
+        console.log('[DURABLE OBJECT ACCEPTED EVENT]', {
+          senderId: message.senderId,
+          isHost: this.room?.hostId === message.senderId,
+          eventType: message.type
+        });
+
         this.room.mediaState = {
           ...this.room.mediaState,
           isPlaying: false,
@@ -345,6 +364,12 @@ export class RoomDurableObject {
 
       case 'VIDEO_SEEK': {
         if (!this.room || !this.canUserControlMedia(message.senderId)) return;
+        console.log('[DURABLE OBJECT ACCEPTED EVENT]', {
+          senderId: message.senderId,
+          isHost: this.room?.hostId === message.senderId,
+          eventType: message.type
+        });
+
         this.room.mediaState = {
           ...this.room.mediaState,
           currentTime: message.currentTime,
@@ -371,6 +396,12 @@ export class RoomDurableObject {
 
       case 'VIDEO_SOURCE_CHANGED': {
         if (!this.room || !this.canUserControlMedia(message.senderId)) return;
+        console.log('[DURABLE OBJECT ACCEPTED EVENT]', {
+          senderId: message.senderId,
+          isHost: this.room?.hostId === message.senderId,
+          eventType: message.type
+        });
+
         const source = message.source;
         this.room.mediaState = {
           ...this.room.mediaState,
@@ -405,6 +436,12 @@ export class RoomDurableObject {
 
       case 'LOCAL_FILE_SELECTED': {
         if (!this.room || !this.canUserControlMedia(message.senderId)) return;
+        console.log('[DURABLE OBJECT ACCEPTED EVENT]', {
+          senderId: message.senderId,
+          isHost: this.room?.hostId === message.senderId,
+          eventType: message.type
+        });
+
         this.room.mediaState = {
           ...this.room.mediaState,
           sourceType: 'local',
@@ -438,11 +475,19 @@ export class RoomDurableObject {
 
       case 'VIDEO_RATE_CHANGED': {
         if (!this.room || !this.canUserControlMedia(message.senderId)) return;
+        console.log('[DURABLE OBJECT ACCEPTED EVENT]', {
+          senderId: message.senderId,
+          isHost: this.room?.hostId === message.senderId,
+          eventType: message.type
+        });
+
         this.room.mediaState = {
           ...this.room.mediaState,
           playbackRate: message.playbackRate,
           currentTime: message.currentTime,
-          updatedAt: now
+          updatedAt: now,
+          updatedBy: message.senderId,
+          updatedByName: message.senderName
         };
         await this.persistState();
 
@@ -461,11 +506,19 @@ export class RoomDurableObject {
 
       case 'VIDEO_ENDED': {
         if (!this.room || !this.canUserControlMedia(message.senderId)) return;
+        console.log('[DURABLE OBJECT ACCEPTED EVENT]', {
+          senderId: message.senderId,
+          isHost: this.room?.hostId === message.senderId,
+          eventType: message.type
+        });
+
         this.room.mediaState = {
           ...this.room.mediaState,
           isPlaying: false,
           currentTime: message.currentTime,
-          updatedAt: now
+          updatedAt: now,
+          updatedBy: message.senderId,
+          updatedByName: message.senderName
         };
         await this.persistState();
 
@@ -555,6 +608,12 @@ export class RoomDurableObject {
   }
 
   private broadcast(message: ServerMessage, excludeSocket?: WebSocket): void {
+    const recipientCount = Math.max(0, this.sessions.size - (excludeSocket ? 1 : 0));
+    console.log('[BROADCAST]', {
+      eventType: message.type,
+      recipientCount
+    });
+
     const serialized = JSON.stringify(message);
     for (const [ws] of this.sessions.entries()) {
       if (ws === excludeSocket) continue;

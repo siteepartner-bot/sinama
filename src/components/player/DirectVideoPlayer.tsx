@@ -188,12 +188,6 @@ export function DirectVideoPlayer({
 
   // Handle Play/Pause by local user action
   const handleTogglePlay = useCallback(() => {
-    if (!canControlVideo) {
-      setSyncFeedback('کنترل ویدیو در انحصار مالک اتاق است');
-      setTimeout(() => setSyncFeedback(null), 3000);
-      return;
-    }
-
     const video = videoRef.current;
     if (!video) return;
 
@@ -202,46 +196,51 @@ export function DirectVideoPlayer({
       setIsEnded(false);
     }
 
-    if (video.paused) {
+    const nextPlaying = video.paused || video.ended;
+    const time = video.currentTime;
+
+    if (nextPlaying) {
+      suppressPlayBroadcast.current = 1;
       video.play().catch((e) => {
         console.warn('Play request failed:', e);
         setIsPlaying(false);
       });
+      setIsPlaying(true);
+      onPlayChange?.(true, time);
+      showFeedbackToast('پخش برای همه همگام شد');
     } else {
+      suppressPauseBroadcast.current = 1;
       video.pause();
+      setIsPlaying(false);
+      onPlayChange?.(false, time);
+      showFeedbackToast('توقف برای همه همگام شد');
     }
-  }, [isEnded, canControlVideo]);
+  }, [isEnded, onPlayChange, showFeedbackToast]);
 
   // Handle Seek by local user action
   const handleSeek = useCallback((time: number) => {
-    if (!canControlVideo) {
-      setSyncFeedback('کنترل ویدیو در انحصار مالک اتاق است');
-      setTimeout(() => setSyncFeedback(null), 3000);
-      return;
-    }
-
     const video = videoRef.current;
     if (!video) return;
 
     const clampedTime = Math.max(0, Math.min(time, duration > 0 ? duration : Infinity));
+    suppressSeekBroadcast.current = 1;
     video.currentTime = clampedTime;
     setCurrentTime(clampedTime);
     setIsEnded(false);
-  }, [duration, canControlVideo]);
+
+    onSeekChange?.(clampedTime);
+    showFeedbackToast('تغییر زمان برای همه همگام شد');
+  }, [duration, onSeekChange, showFeedbackToast]);
 
   // Handle Playback Rate change by local user action
   const handlePlaybackRateChange = useCallback((rate: number) => {
-    if (!canControlVideo) {
-      setSyncFeedback('کنترل ویدیو در انحصار مالک اتاق است');
-      setTimeout(() => setSyncFeedback(null), 3000);
-      return;
-    }
-
     const video = videoRef.current;
     if (!video) return;
+    suppressRateBroadcast.current = 1;
     video.playbackRate = rate;
     setPlaybackRate(rate);
-  }, [canControlVideo]);
+    onRateChange?.(rate);
+  }, [onRateChange]);
 
   // Handle Volume
   const handleVolumeChange = (newVol: number) => {

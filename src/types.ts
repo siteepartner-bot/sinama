@@ -3,11 +3,20 @@ export interface RoomUser {
   name: string;
   joinedAt: number;
   isHost: boolean;
+  role?: 'host' | 'member';
+  canControlMedia?: boolean;
   isOnline: boolean;
   micEnabled: boolean;
   cameraEnabled: boolean;
   screenSharingEnabled?: boolean;
 }
+
+/**
+ * Core Permission Rule:
+ * In the current Roomy architecture, ALL room members have equal permission to control media.
+ * Play, Pause, Seek, Rate Change, and Video Source Selection are open to Host and all Members.
+ */
+export const ALL_ROOM_MEMBERS_CAN_CONTROL_MEDIA = true;
 
 // Backward compatibility alias for UI components
 export type Member = RoomUser;
