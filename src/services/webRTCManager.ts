@@ -165,8 +165,8 @@ export class WebRTCManager {
         this.peerMediaStates.set(remoteUserId, existingState);
         this.notifyPeerStates();
 
-        // If local user is in call, connect to joining peer
-        if (this.isInCall) {
+        // If local user is in call or screen sharing, connect to joining peer
+        if (this.isInCall || this.isScreenSharing) {
           console.log('[CONNECTING TO NEW PEER]', { remoteUserId });
           const pc = this.getOrCreatePeerConnection(remoteUserId, joinMsg.senderName);
           // If we are the impolite peer or the caller, we can proactively create offer
@@ -267,7 +267,31 @@ export class WebRTCManager {
           updatedAt: Date.now()
         };
         peer.screenSharing = true;
+
+        // Check if a screen stream was already received in peerConnections
+        const pc = this.peerConnections.get(remoteUserId);
+        const cameraStream = this.remoteStreams.get(remoteUserId);
+        if (pc) {
+          pc.getReceivers().forEach((receiver) => {
+            if (receiver.track && receiver.track.kind === 'video') {
+              // If cameraStream doesn't have this track, it's the screen track!
+              if (!cameraStream || !cameraStream.getVideoTracks().some((t) => t.id === receiver.track.id)) {
+                console.log('[SCREEN] Found screen track in receivers during SCREEN_SHARE_STARTED:', receiver.track.id);
+                let screenStream = this.remoteScreenStreams.get(remoteUserId);
+                if (!screenStream) {
+                  screenStream = new MediaStream([receiver.track]);
+                  this.remoteScreenStreams.set(remoteUserId, screenStream);
+                } else if (!screenStream.getTracks().some((t) => t.id === receiver.track.id)) {
+                  screenStream.addTrack(receiver.track);
+                }
+                peer.screenStream = screenStream;
+              }
+            }
+          });
+        }
+
         this.peerMediaStates.set(remoteUserId, peer);
+        this.notifyRemoteScreenStreams();
         this.notifyPeerStates();
         break;
       }
@@ -885,15 +909,30 @@ export class WebRTCManager {
   }
 
   /**
-   * Synchronizes local screen share tracks across all open RTCPeerConnections.
+   * Synchronizes local screen share tracks across all room peers.
    */
   public syncScreenTracksWithAllPeers(): void {
     if (!this.localScreenStream) return;
     const screenTracks = this.localScreenStream.getTracks();
-    console.log('[SCREEN] Active peers count:', this.peerConnections.size);
 
-    this.peerConnections.forEach((pc, remoteUserId) => {
+    // Gather all remote user IDs in the room
+    const remoteUserIds = new Set<string>();
+    const currentUserId = realTimeClient.getCurrentUser()?.userId;
+
+    this.peerMediaStates.forEach((_, userId) => {
+      if (userId && userId !== currentUserId) remoteUserIds.add(userId);
+    });
+
+    this.peerConnections.forEach((_, userId) => {
+      if (userId && userId !== currentUserId) remoteUserIds.add(userId);
+    });
+
+    console.log('[SCREEN] Synchronizing screen tracks with remote users count:', remoteUserIds.size);
+
+    remoteUserIds.forEach((remoteUserId) => {
+      const pc = this.getOrCreatePeerConnection(remoteUserId);
       if (pc.signalingState === 'closed') return;
+
       const senders = pc.getSenders();
 
       screenTracks.forEach((track) => {
@@ -902,9 +941,9 @@ export class WebRTCManager {
           try {
             console.log('[SCREEN] Adding screen track to peer:', remoteUserId);
             const sender = pc.addTrack(track, this.localScreenStream!);
-            console.log('[SCREEN] Sender created:', sender.track?.id || track.id);
+            console.log('[SCREEN] Sender created for track:', sender.track?.id || track.id);
 
-            // Force renegotiation if signalingState is stable
+            // Initiate renegotiation offer if stable
             if (pc.signalingState === 'stable') {
               this.initiateOffer(remoteUserId, pc);
             }
