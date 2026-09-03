@@ -1,10 +1,27 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Youtube, Play, Globe, Upload, Link2, Sparkles, AlertCircle, CheckCircle2, Users, Loader2, X, Film, Check } from 'lucide-react';
+import {
+  Youtube,
+  Play,
+  Globe,
+  Upload,
+  Link2,
+  Sparkles,
+  AlertCircle,
+  CheckCircle2,
+  Users,
+  Loader2,
+  X,
+  Film,
+  Zap,
+  Clock,
+  Gauge,
+  HardDrive
+} from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
 import { parseYouTubeUrl, parseAparatUrl, isValidDirectVideoUrl } from '../utils/mediaParsers';
 
-type TabType = 'upload' | 'youtube' | 'aparat' | 'direct';
+type TabType = 'upload' | 'syncplay' | 'direct' | 'youtube' | 'aparat';
 
 interface UploadProgressState {
   isUploading: boolean;
@@ -14,17 +31,24 @@ interface UploadProgressState {
   uploadedBytes: number;
   totalBytes: number;
   speedFormatted: string;
+  etaFormatted: string;
+  totalChunks: number;
+  completedChunks: number;
+  activeThreads: number;
 }
+
+const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB per chunk
+const CONCURRENCY = 4; // 4 simultaneous upload streams for maximum network throughput
 
 export function MediaSourcePanel() {
   const { changeVideoSource } = useRoom();
   const [activeTab, setActiveTab] = useState<TabType>('upload');
-  
+
   // URL Input states
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [aparatUrl, setAparatUrl] = useState('');
   const [directUrl, setDirectUrl] = useState('');
-  
+
   // Upload states
   const [uploadState, setUploadState] = useState<UploadProgressState>({
     isUploading: false,
@@ -33,16 +57,24 @@ export function MediaSourcePanel() {
     progress: 0,
     uploadedBytes: 0,
     totalBytes: 0,
-    speedFormatted: ''
+    speedFormatted: '',
+    etaFormatted: '',
+    totalChunks: 0,
+    completedChunks: 0,
+    activeThreads: 0
   });
-  
+
+  // Local Syncplay state
+  const [syncplayFileName, setSyncplayFileName] = useState<string | null>(null);
+
   // Error and feedback states
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const syncplayFileInputRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const uploadStartTimeRef = useRef<number>(0);
 
   // Clear messages when tab changes
@@ -66,6 +98,14 @@ export function MediaSourcePanel() {
     const sizes = ['بایت', 'کیلوبایت', 'مگابایت', 'گیگابایت'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
+  const formatETA = (seconds: number): string => {
+    if (!isFinite(seconds) || seconds < 0) return '--';
+    if (seconds < 60) return `${Math.round(seconds)} ثانیه`;
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.round(seconds % 60);
+    return `${mins} دقیقه و ${secs} ثانیه`;
   };
 
   // 1. YouTube Submit
@@ -124,32 +164,8 @@ export function MediaSourcePanel() {
     showSuccessFeedback('لینک مستقیم ویدیو با موفقیت برای تمام اعضای اتاق بارگذاری شد.');
   };
 
-  // 4. Video File Upload to Server
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      startUpload(file);
-    }
-  };
-
-  const cancelUpload = () => {
-    if (xhrRef.current) {
-      xhrRef.current.abort();
-      xhrRef.current = null;
-    }
-    setUploadState({
-      isUploading: false,
-      fileName: '',
-      fileSizeFormatted: '',
-      progress: 0,
-      uploadedBytes: 0,
-      totalBytes: 0,
-      speedFormatted: ''
-    });
-    setErrorMsg('آپلود ویدیو متوقف شد.');
-  };
-
-  const startUpload = (file: File) => {
+  // 4. Turbo Multi-Threaded Chunk Upload
+  const startTurboUpload = async (file: File) => {
     setErrorMsg(null);
     setSuccessMsg(null);
 
@@ -161,79 +177,207 @@ export function MediaSourcePanel() {
       return;
     }
 
+    const totalSize = file.size;
+    const totalChunks = Math.max(1, Math.ceil(totalSize / CHUNK_SIZE));
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     uploadStartTimeRef.current = Date.now();
     setUploadState({
       isUploading: true,
       fileName: file.name,
-      fileSizeFormatted: formatBytes(file.size),
+      fileSizeFormatted: formatBytes(totalSize),
       progress: 0,
       uploadedBytes: 0,
-      totalBytes: file.size,
-      speedFormatted: '0 مگابایت/ثانیه'
+      totalBytes: totalSize,
+      speedFormatted: 'در حال آماده‌سازی...',
+      etaFormatted: 'محاسبه زمان...',
+      totalChunks,
+      completedChunks: 0,
+      activeThreads: Math.min(CONCURRENCY, totalChunks)
     });
 
-    const formData = new FormData();
-    formData.append('video', file);
-
-    const xhr = new XMLHttpRequest();
-    xhrRef.current = xhr;
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const percent = Math.round((event.loaded / event.total) * 100);
-        const elapsedTime = (Date.now() - uploadStartTimeRef.current) / 1000;
-        const bytesPerSec = elapsedTime > 0 ? event.loaded / elapsedTime : 0;
-        const speedStr = formatBytes(bytesPerSec) + '/ثانیه';
-
-        setUploadState({
-          isUploading: true,
+    try {
+      // Step A: Initialize Chunked Upload on Server
+      const initRes = await fetch('/api/upload/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           fileName: file.name,
-          fileSizeFormatted: formatBytes(event.total),
-          progress: Math.min(99, percent),
-          uploadedBytes: event.loaded,
-          totalBytes: event.total,
-          speedFormatted: speedStr
-        });
-      }
-    };
+          fileSize: totalSize,
+          totalChunks,
+          chunkSize: CHUNK_SIZE
+        }),
+        signal: abortController.signal
+      });
 
-    xhr.onload = () => {
-      xhrRef.current = null;
-      if (xhr.status >= 200 && xhr.status < 300) {
+      if (!initRes.ok) {
+        const errJson = await initRes.json().catch(() => ({}));
+        throw new Error(errJson.error || `خطا در شروع آپلود (${initRes.status})`);
+      }
+
+      const { uploadId } = await initRes.json();
+
+      // Step B: Parallel Worker Pool Upload
+      let nextChunkIndex = 0;
+      let completedCount = 0;
+      const chunkBytesLoaded = new Array(totalChunks).fill(0);
+
+      const updateProgress = () => {
+        const totalUploaded = chunkBytesLoaded.reduce((acc, curr) => acc + curr, 0);
+        const percent = Math.min(99, Math.round((totalUploaded / totalSize) * 100));
+        const elapsed = (Date.now() - uploadStartTimeRef.current) / 1000;
+        const bytesPerSec = elapsed > 0 ? totalUploaded / elapsed : 0;
+        const remainingBytes = Math.max(0, totalSize - totalUploaded);
+        const etaSeconds = bytesPerSec > 0 ? remainingBytes / bytesPerSec : 0;
+
+        setUploadState((prev) => ({
+          ...prev,
+          progress: percent,
+          uploadedBytes: totalUploaded,
+          completedChunks: completedCount,
+          speedFormatted: formatBytes(bytesPerSec) + '/ثانیه (۴ کانال موازی)',
+          etaFormatted: formatETA(etaSeconds)
+        }));
+      };
+
+      const uploadSingleChunk = async (index: number, retries = 3): Promise<void> => {
+        const start = index * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, totalSize);
+        const chunkBlob = file.slice(start, end);
+        const thisChunkSize = end - start;
+
         try {
-          const res = JSON.parse(xhr.responseText);
-          if (res.success && res.url) {
-            setUploadState((prev) => ({ ...prev, progress: 100, isUploading: false }));
-            // Set video source to direct server URL so BOTH / ALL members play from the server!
-            changeVideoSource('direct', res.url, res.fileName || file.name);
-            showSuccessFeedback(`فایل «${file.name}» با موفقیت آپلود شد و برای تمامی اعضای اتاق پخش می‌شود.`);
-          } else {
-            setErrorMsg(res.error || 'خطا در پردازش ویدیو در سرور.');
-            setUploadState((prev) => ({ ...prev, isUploading: false }));
+          const res = await fetch(`/api/upload/chunk?uploadId=${encodeURIComponent(uploadId)}&chunkIndex=${index}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              'X-Upload-Id': uploadId,
+              'X-Chunk-Index': index.toString()
+            },
+            body: chunkBlob,
+            signal: abortController.signal
+          });
+
+          if (!res.ok) {
+            throw new Error(`خطا در ارسال تکه ${index}`);
           }
-        } catch {
-          setErrorMsg('خطا در دریافت پاسخ سرور.');
-          setUploadState((prev) => ({ ...prev, isUploading: false }));
+
+          chunkBytesLoaded[index] = thisChunkSize;
+          completedCount++;
+          updateProgress();
+        } catch (err) {
+          if (abortController.signal.aborted) return;
+          if (retries > 0) {
+            await new Promise((r) => setTimeout(r, 600));
+            return uploadSingleChunk(index, retries - 1);
+          }
+          throw err;
         }
-      } else {
-        try {
-          const res = JSON.parse(xhr.responseText);
-          setErrorMsg(res.error || `خطای سرور (${xhr.status})`);
-        } catch {
-          setErrorMsg(`خطا در آپلود ویدیو (کد وضعیت: ${xhr.status})`);
+      };
+
+      // Worker Thread Function
+      const worker = async () => {
+        while (nextChunkIndex < totalChunks) {
+          if (abortController.signal.aborted) break;
+          const currentIndex = nextChunkIndex++;
+          await uploadSingleChunk(currentIndex);
         }
-        setUploadState((prev) => ({ ...prev, isUploading: false }));
+      };
+
+      // Launch Concurrent Workers
+      const activeConcurrency = Math.min(CONCURRENCY, totalChunks);
+      const workerPromises: Promise<void>[] = [];
+      for (let i = 0; i < activeConcurrency; i++) {
+        workerPromises.push(worker());
       }
-    };
 
-    xhr.onerror = () => {
-      xhrRef.current = null;
-      setErrorMsg('خطای شبکه در اتصال به سرور جهت آپلود ویدیو.');
+      await Promise.all(workerPromises);
+
+      if (abortController.signal.aborted) return;
+
+      // Step C: Complete & Merge on Server
+      setUploadState((prev) => ({
+        ...prev,
+        progress: 99,
+        speedFormatted: 'در حال ذخیره‌سازی نهایی روی سرور...',
+        etaFormatted: 'چند لحظه...'
+      }));
+
+      const completeRes = await fetch('/api/upload/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uploadId,
+          fileName: file.name,
+          totalChunks
+        }),
+        signal: abortController.signal
+      });
+
+      if (!completeRes.ok) {
+        const errJson = await completeRes.json().catch(() => ({}));
+        throw new Error(errJson.error || 'خطا در تجمیع نهایی فایل روی سرور');
+      }
+
+      const result = await completeRes.json();
+      if (result.success && result.url) {
+        setUploadState((prev) => ({ ...prev, progress: 100, isUploading: false }));
+        // Broadcast and play from high-speed HTTP 206 streaming URL
+        changeVideoSource('direct', result.url, result.fileName || file.name);
+        showSuccessFeedback(`فایل «${file.name}» با بالاترین سرعت آپلود شد و برای هر دو طرف پخش می‌شود.`);
+      } else {
+        throw new Error(result.error || 'خطا در ثبت ویدیوی آپلود شده');
+      }
+    } catch (err: any) {
+      if (abortController.signal.aborted) {
+        setErrorMsg('آپلود ویدیو توسط شما لغو شد.');
+      } else {
+        console.error('Turbo Upload Failed:', err);
+        setErrorMsg(err.message || 'خطا در آپلود پرسرعت ویدیو. لطفاً اتصال اینترنت را بررسی کنید.');
+      }
       setUploadState((prev) => ({ ...prev, isUploading: false }));
-    };
+    } finally {
+      abortControllerRef.current = null;
+    }
+  };
 
-    xhr.open('POST', '/api/upload', true);
-    xhr.send(formData);
+  const cancelUpload = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setUploadState({
+      isUploading: false,
+      fileName: '',
+      fileSizeFormatted: '',
+      progress: 0,
+      uploadedBytes: 0,
+      totalBytes: 0,
+      speedFormatted: '',
+      etaFormatted: '',
+      totalChunks: 0,
+      completedChunks: 0,
+      activeThreads: 0
+    });
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      startTurboUpload(file);
+    }
+  };
+
+  // Syncplay mode handler (Instant 0-wait local playback)
+  const handleSyncplayFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSyncplayFileName(file.name);
+      const objectUrl = URL.createObjectURL(file);
+      changeVideoSource('direct', objectUrl, `[Syncplay] ${file.name}`);
+      showSuccessFeedback(`فایل محلی «${file.name}» آماده شد! اگر طرف مقابل هم همین فایل را انتخاب کند، همزمان با صفر مگابایت مصرف حجم پخش می‌شود.`);
+    }
   };
 
   // Drag and drop event handlers
@@ -251,7 +395,7 @@ export function MediaSourcePanel() {
     setIsDragOver(false);
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      startUpload(file);
+      startTurboUpload(file);
     }
   };
 
@@ -278,8 +422,9 @@ export function MediaSourcePanel() {
   };
 
   const tabs = [
-    { id: 'upload', label: 'آپلود از کامپیوتر (پخش دوطرفه)', icon: Upload, color: 'text-rose-400' },
-    { id: 'direct', label: 'لینک مستقیم ویدیو', icon: Globe, color: 'text-blue-400' },
+    { id: 'upload', label: 'آپلود توربو چندکاناله (سرعت فوق‌العاده)', icon: Zap, color: 'text-amber-400' },
+    { id: 'syncplay', label: 'پخش همگام محلی (بدون آپلود و معطلی)', icon: HardDrive, color: 'text-emerald-400' },
+    { id: 'direct', label: 'لینک مستقیم وب', icon: Globe, color: 'text-blue-400' },
     { id: 'youtube', label: 'یوتیوب (YouTube)', icon: Youtube, color: 'text-red-500' },
     { id: 'aparat', label: 'آپارات (Aparat)', icon: Play, color: 'text-orange-400' },
   ];
@@ -290,11 +435,11 @@ export function MediaSourcePanel() {
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
           <Link2 className="h-4.5 w-4.5 text-rose-500" />
-          <span>انتخاب و آپلود منبع ویدیو</span>
+          <span>انتخاب و پخش ویدیو در اتاق</span>
         </h3>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full text-[11px] font-medium">
-          <Users className="h-3 w-3" />
-          <span>پخش و همگام‌سازی دوطرفه</span>
+        <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full text-[11px] font-medium">
+          <Zap className="h-3 w-3 fill-amber-400" />
+          <span>موتور انتقال پرسرعت Turbo Multi-Thread</span>
         </div>
       </div>
 
@@ -320,14 +465,6 @@ export function MediaSourcePanel() {
             </button>
           );
         })}
-      </div>
-
-      {/* Video Control Permission Notice */}
-      <div className="flex items-center gap-2.5 p-2.5 mb-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-xl" id="panel-allowed-notice">
-        <Users className="h-4 w-4 text-emerald-400 shrink-0" />
-        <span className="leading-relaxed">
-          با آپلود یا انتخاب هر ویدیو، فایل روی سرور ذخیره شده و همزمان با کنترل کامل (پخش، توقف، عقب/جلو و سرعت) برای هر دو طرف پخش می‌شود.
-        </span>
       </div>
 
       {/* Error / Success Feedback banner */}
@@ -361,7 +498,7 @@ export function MediaSourcePanel() {
 
       {/* Tab Contents */}
       <div className="flex-1 flex flex-col justify-center">
-        {/* 1. Upload from Computer (Saved on server & streamed for all users) */}
+        {/* 1. Turbo Multi-Threaded Chunk Upload */}
         {activeTab === 'upload' && (
           <div className="space-y-3">
             {!uploadState.isUploading ? (
@@ -372,8 +509,8 @@ export function MediaSourcePanel() {
                 onClick={() => fileInputRef.current?.click()}
                 className={`flex flex-col items-center justify-center p-6 md:p-8 border-2 border-dashed rounded-2xl cursor-pointer transition-all select-none ${
                   isDragOver
-                    ? 'border-rose-500 bg-rose-500/15 scale-[1.01]'
-                    : 'border-zinc-800 bg-zinc-900/40 hover:border-rose-500/40 hover:bg-zinc-900/60'
+                    ? 'border-amber-500 bg-amber-500/15 scale-[1.01]'
+                    : 'border-zinc-800 bg-zinc-900/40 hover:border-amber-500/40 hover:bg-zinc-900/60'
                 }`}
                 id="drag-and-drop-container"
               >
@@ -384,12 +521,15 @@ export function MediaSourcePanel() {
                   accept="video/*,.mp4,.mkv,.webm,.mov,.ogg,.avi,.m4v,video/x-matroska,video/mkv,video/mp4,video/webm"
                   className="hidden"
                 />
-                <div className="p-3.5 bg-rose-500/15 text-rose-400 rounded-2xl mb-3 border border-rose-500/30">
-                  <Upload className="h-6 w-6" />
+                <div className="p-3.5 bg-amber-500/15 text-amber-400 rounded-2xl mb-3 border border-amber-500/30">
+                  <Zap className="h-6 w-6" />
                 </div>
-                <h4 className="text-sm font-bold text-zinc-100">فایل ویدیو را انتخاب یا اینجا بکشید</h4>
+                <h4 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
+                  <span>آپلود توربو چندکاناله (Multi-Threaded)</span>
+                  <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-full text-[10px]">۴ کانال موازی</span>
+                </h4>
                 <p className="text-xs text-zinc-400 mt-1.5 text-center leading-relaxed max-w-md">
-                  ویدیو در سرور ذخیره می‌شود و بلافاصله برای <span className="text-rose-400 font-semibold">هر دو طرف به صورت مشترک</span> با کیفیت اصلی، جابجایی زمان و همگام‌سازی زنده پخش خواهد شد.
+                  ویدیو به قطعات ۴ مگابایتی تقسیم شده و با <strong className="text-amber-300">۴ اتصال موازی همزمان</strong> با حداکثر پهنای باند اینترنت شما روی سرور ذخیره و برای هر دو طرف پخش می‌شود.
                 </p>
                 <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                   <span className="px-2 py-0.5 bg-zinc-800/80 border border-zinc-700/60 rounded-md text-[10px] text-zinc-300 font-mono">MP4</span>
@@ -404,13 +544,13 @@ export function MediaSourcePanel() {
               <div className="p-5 bg-zinc-900/80 border border-zinc-800 rounded-2xl flex flex-col gap-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="p-2.5 bg-rose-500/15 text-rose-400 rounded-xl border border-rose-500/30 shrink-0">
+                    <div className="p-2.5 bg-amber-500/15 text-amber-400 rounded-xl border border-amber-500/30 shrink-0">
                       <Film className="h-5 w-5" />
                     </div>
                     <div className="min-w-0">
                       <h4 className="text-xs font-bold text-zinc-100 truncate">{uploadState.fileName}</h4>
                       <p className="text-[11px] text-zinc-400 mt-0.5">
-                        حجم: {uploadState.fileSizeFormatted} • سرعت: {uploadState.speedFormatted}
+                        حجم: {uploadState.fileSizeFormatted} • قطعات: {uploadState.completedChunks} از {uploadState.totalChunks}
                       </p>
                     </div>
                   </div>
@@ -424,34 +564,84 @@ export function MediaSourcePanel() {
                   </button>
                 </div>
 
-                {/* Progress bar */}
-                <div className="space-y-1.5">
+                {/* Progress bar and metrics */}
+                <div className="space-y-2">
                   <div className="flex items-center justify-between text-xs font-medium">
-                    <span className="text-zinc-400 flex items-center gap-1.5">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-rose-500" />
-                      <span>در حال آپلود و آماده‌سازی برای پخش همزمان...</span>
+                    <span className="text-zinc-300 flex items-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" />
+                      <span>{uploadState.speedFormatted}</span>
                     </span>
-                    <span className="text-rose-400 font-bold font-mono">{uploadState.progress}٪</span>
+                    <span className="text-amber-400 font-bold font-mono text-sm">{uploadState.progress}٪</span>
                   </div>
-                  <div className="w-full h-2.5 bg-zinc-800 rounded-full overflow-hidden p-0.5">
+
+                  <div className="w-full h-3 bg-zinc-800 rounded-full overflow-hidden p-0.5">
                     <motion.div
-                      className="h-full bg-gradient-to-r from-rose-600 to-pink-500 rounded-full"
+                      className="h-full bg-gradient-to-r from-amber-500 via-rose-500 to-pink-500 rounded-full"
                       initial={{ width: '0%' }}
                       animate={{ width: `${uploadState.progress}%` }}
-                      transition={{ ease: 'easeOut', duration: 0.2 }}
+                      transition={{ ease: 'easeOut', duration: 0.15 }}
                     />
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-1">
+                    <span className="flex items-center gap-1">
+                      <Clock className="h-3 w-3 text-zinc-500" />
+                      <span>زمان باقیمانده: <strong className="text-zinc-200">{uploadState.etaFormatted}</strong></span>
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Gauge className="h-3 w-3 text-amber-400" />
+                      <span>۴ رشته موازی همزمان فعال</span>
+                    </span>
                   </div>
                 </div>
 
                 <p className="text-[11px] text-zinc-500 text-center leading-relaxed">
-                  لطفاً تا پایان آپلود صفحه را نبندید. پس از اتمام، ویدیو به طور خودکار در پلیر هر دو طرف لود می‌شود.
+                  فایل با بالاترین شتاب چندکاناله در حال بارگذاری است. به محض اتمام، پخش همزمان خودکار شروع می‌شود.
                 </p>
               </div>
             )}
           </div>
         )}
 
-        {/* 2. Direct URL Form */}
+        {/* 2. Syncplay Local Mode (0 seconds wait, 0 bandwidth consumed) */}
+        {activeTab === 'syncplay' && (
+          <div className="p-5 bg-zinc-900/60 border border-zinc-800/80 rounded-2xl flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-emerald-500/15 text-emerald-400 rounded-xl border border-emerald-500/30">
+                <HardDrive className="h-6 w-6" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-zinc-100">پخش آنی فایل محلی (Syncplay Mode)</h4>
+                <p className="text-[11px] text-zinc-400 mt-0.5">
+                  صفر ثانیه زمان انتظار • صفر مگابایت مصرف حجم آپلود
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-xl leading-relaxed">
+              💡 <strong>روش کار:</strong> اگر هر دو نفر شما فایل ویدیویی مشابه را از قبل دانلود کرده‌اید (یا فایل روی کامپیوتر هر دو موجود است)، کافیست هر دو نفر آن را انتخاب کنید. پلیر فوراً بدون نیاز به آپلود، پخش و زمان را بین هر دو نفر با دقت میلی‌ثانیه سینک می‌کند!
+            </div>
+
+            <input
+              type="file"
+              ref={syncplayFileInputRef}
+              onChange={handleSyncplayFile}
+              accept="video/*,.mp4,.mkv,.webm,.mov,.ogg,.avi"
+              className="hidden"
+            />
+
+            <button
+              type="button"
+              onClick={() => syncplayFileInputRef.current?.click()}
+              className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-emerald-600/20"
+            >
+              <Upload className="h-4 w-4" />
+              <span>{syncplayFileName ? `تغییر فایل انتخابی (${syncplayFileName})` : 'انتخاب فایل از سیستم و شروع پخش آنی'}</span>
+            </button>
+          </div>
+        )}
+
+        {/* 3. Direct URL Form */}
         {activeTab === 'direct' && (
           <form onSubmit={handleDirectSubmit} className="space-y-3">
             <div className="flex items-center justify-between">
@@ -493,7 +683,7 @@ export function MediaSourcePanel() {
           </form>
         )}
 
-        {/* 3. YouTube Form */}
+        {/* 4. YouTube Form */}
         {activeTab === 'youtube' && (
           <form onSubmit={handleYoutubeSubmit} className="space-y-3">
             <div className="flex items-center justify-between">
@@ -535,7 +725,7 @@ export function MediaSourcePanel() {
           </form>
         )}
 
-        {/* 4. Aparat Form */}
+        {/* 5. Aparat Form */}
         {activeTab === 'aparat' && (
           <form onSubmit={handleAparatSubmit} className="space-y-3">
             <div className="flex items-center justify-between">

@@ -15,6 +15,11 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
+const TEMP_UPLOADS_DIR = path.join(process.cwd(), 'uploads_temp');
+if (!fs.existsSync(TEMP_UPLOADS_DIR)) {
+  fs.mkdirSync(TEMP_UPLOADS_DIR, { recursive: true });
+}
+
 // Setup multer storage
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -192,8 +197,139 @@ async function startServer() {
     res.json({ status: 'ok', service: 'Roomy Full-Stack Server' });
   });
 
-  // 2. Video Upload API
-  app.post('/api/upload', upload.single('video'), (req, res) => {
+  // 2. High-Speed Multi-Threaded Chunked Upload APIs
+  app.post('/api/upload/init', (req, res) => {
+    try {
+      const { fileName, fileSize, totalChunks, chunkSize } = req.body;
+      if (!fileName || !totalChunks) {
+        return res.status(400).json({ error: 'اطلاعات فایل ناقص است.' });
+      }
+
+      const sanitized = Buffer.from(fileName, 'latin1').toString('utf8').replace(/[^a-zA-Z0-9._\-\u0600-\u06FF]/g, '_');
+      const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}_${sanitized}`;
+      const uploadDir = path.join(TEMP_UPLOADS_DIR, uploadId);
+      fs.mkdirSync(uploadDir, { recursive: true });
+
+      return res.json({
+        success: true,
+        uploadId,
+        chunkSize: chunkSize || 4 * 1024 * 1024,
+        totalChunks
+      });
+    } catch (err: any) {
+      console.error('[UPLOAD INIT ERROR]', err);
+      return res.status(500).json({ error: err.message || 'خطا در آماده‌سازی آپلود' });
+    }
+  });
+
+  // Binary chunk receiver with ultra-fast raw disk write
+  app.post('/api/upload/chunk', express.raw({ type: '*/*', limit: '100mb' }), (req, res) => {
+    try {
+      const uploadId = (req.query.uploadId || req.headers['x-upload-id']) as string;
+      const chunkIndexStr = (req.query.chunkIndex || req.headers['x-chunk-index']) as string;
+      const chunkIndex = parseInt(chunkIndexStr, 10);
+
+      if (!uploadId || isNaN(chunkIndex)) {
+        return res.status(400).json({ error: 'پارامترهای آپلود چانک ناقص است.' });
+      }
+
+      const safeUploadId = path.basename(uploadId);
+      const uploadDir = path.join(TEMP_UPLOADS_DIR, safeUploadId);
+      if (!fs.existsSync(uploadDir)) {
+        return res.status(404).json({ error: 'شناسه آپلود یافت نشد یا منقضی شده است.' });
+      }
+
+      const chunkPath = path.join(uploadDir, `chunk_${chunkIndex.toString().padStart(6, '0')}`);
+      const data = req.body as Buffer;
+
+      if (!data || data.length === 0) {
+        return res.status(400).json({ error: 'محتوای تکه ارسالی خالی است.' });
+      }
+
+      fs.writeFileSync(chunkPath, data);
+
+      return res.json({
+        success: true,
+        chunkIndex,
+        receivedBytes: data.length
+      });
+    } catch (err: any) {
+      console.error('[CHUNK UPLOAD ERROR]', err);
+      return res.status(500).json({ error: err.message || 'خطا در ذخیره تکه ویدیو' });
+    }
+  });
+
+  // Finalize and stitch chunks together
+  app.post('/api/upload/complete', async (req, res) => {
+    try {
+      const { uploadId, fileName, totalChunks } = req.body;
+      if (!uploadId || !fileName || !totalChunks) {
+        return res.status(400).json({ error: 'پارامترهای تکمیل آپلود ناقص است.' });
+      }
+
+      const safeUploadId = path.basename(uploadId);
+      const uploadDir = path.join(TEMP_UPLOADS_DIR, safeUploadId);
+      if (!fs.existsSync(uploadDir)) {
+        return res.status(404).json({ error: 'پوشه موقت آپلود یافت نشد.' });
+      }
+
+      const sanitized = Buffer.from(fileName, 'latin1').toString('utf8').replace(/[^a-zA-Z0-9._\-\u0600-\u06FF]/g, '_');
+      const finalFilename = `${Date.now()}_${sanitized}`;
+      const finalPath = path.join(UPLOADS_DIR, finalFilename);
+
+      const writeStream = fs.createWriteStream(finalPath, { flags: 'w' });
+
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkPath = path.join(uploadDir, `chunk_${i.toString().padStart(6, '0')}`);
+        if (!fs.existsSync(chunkPath)) {
+          writeStream.destroy();
+          if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+          return res.status(400).json({ error: `تکه شماره ${i} مفقود شده است. لطفاً مجدداً تلاش کنید.` });
+        }
+
+        const chunkBuffer = fs.readFileSync(chunkPath);
+        writeStream.write(chunkBuffer);
+      }
+
+      writeStream.end();
+
+      await new Promise<void>((resolve, reject) => {
+        writeStream.on('finish', () => resolve());
+        writeStream.on('error', (err) => reject(err));
+      });
+
+      // Cleanup temp directory
+      try {
+        fs.rmSync(uploadDir, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        console.warn('Failed to cleanup temp dir:', cleanupErr);
+      }
+
+      const stat = fs.statSync(finalPath);
+      const fileUrl = `/api/uploads/${encodeURIComponent(finalFilename)}`;
+
+      console.log('[TURBO CHUNKED UPLOAD COMPLETE]', {
+        finalFilename,
+        fileName,
+        totalChunks,
+        size: stat.size
+      });
+
+      return res.json({
+        success: true,
+        url: fileUrl,
+        fileName,
+        size: stat.size,
+        mimetype: getMimeType(finalFilename)
+      });
+    } catch (err: any) {
+      console.error('[UPLOAD COMPLETE ERROR]', err);
+      return res.status(500).json({ error: err.message || 'خطا در تجمیع فایل نهایی.' });
+    }
+  });
+
+  // 3. Single-request Video Upload API (Fallback)
+  app.post('/api/upload', upload.single('video') as any, (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'هیچ فایلی برای آپلود انتخاب نشده است.' });
