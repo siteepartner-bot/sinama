@@ -90,6 +90,7 @@ export function ScreenSharePanel() {
   }
 
   // Ensure an active tab is selected
+  const activeShareKeys = activeShares.map((s) => `${s.userId}-${Boolean(s.stream)}`).join(',');
   useEffect(() => {
     if (activeShares.length > 0) {
       if (!activeTabUserId || !activeShares.some((s) => s.userId === activeTabUserId)) {
@@ -98,7 +99,7 @@ export function ScreenSharePanel() {
     } else {
       setActiveTabUserId(null);
     }
-  }, [activeShares, activeTabUserId]);
+  }, [activeShareKeys, activeTabUserId]);
 
   const currentShare = activeShares.find((s) => s.userId === activeTabUserId) || activeShares[0];
 
@@ -219,7 +220,13 @@ export function ScreenSharePanel() {
       <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-zinc-800 flex items-center justify-center">
         {currentShare.stream && currentShare.stream.getVideoTracks().length > 0 ? (
           <video
-            ref={videoRef}
+            ref={(el) => {
+              videoRef.current = el;
+              if (el && currentShare.stream && el.srcObject !== currentShare.stream) {
+                el.srcObject = currentShare.stream;
+                el.play().catch(() => {});
+              }
+            }}
             autoPlay
             playsInline
             muted={currentShare.isLocal} // mute local screen to avoid echo

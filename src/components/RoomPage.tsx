@@ -22,7 +22,8 @@ export function RoomPage() {
     joinDirectly,
     clearError,
     isScreenSharing,
-    remoteScreenStreams
+    remoteScreenStreams,
+    peerMediaStates
   } = useRoom();
 
   const [showChat, setShowChat] = useState(true);
@@ -36,6 +37,7 @@ export function RoomPage() {
   const hasActiveScreenShare = Boolean(
     isScreenSharing ||
     (remoteScreenStreams && remoteScreenStreams.size > 0) ||
+    (peerMediaStates && Array.from(peerMediaStates.values()).some((p: any) => p?.screenSharing || Boolean(p?.screenStream))) ||
     roomState?.users.some((u) => u.screenSharingEnabled)
   );
 

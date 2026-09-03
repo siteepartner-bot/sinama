@@ -8,12 +8,9 @@ import {
   WebRTCIceCandidateMessage,
   MediaStateChangedMessage,
   WebRTCJoinMessage,
-  WebRTCLeaveMessage,
-  RoomStateSyncMessage,
-  UserJoinedMessage
+  WebRTCLeaveMessage
 } from '../types';
 import { realTimeClient } from './realtimeClient';
-import { roomService } from './roomService';
 
 export interface WebRTCManagerListeners {
   onLocalStreamChange?: (stream: MediaStream | null) => void;
@@ -44,8 +41,9 @@ export class WebRTCManager {
   private makingOffer: Map<string, boolean> = new Map();
   private isSettingRemoteAnswerPending: Map<string, boolean> = new Map();
   private remotePeerScreenStreamIds: Map<string, string> = new Map();
+  private knownRemoteScreenStreams: Map<string, { userId: string; screenStreamId?: string; receivedAt: number }> = new Map();
+  private bufferedVideoTracks: Map<string, Array<{ track: MediaStreamTrack; stream: MediaStream; addedAt: number }>> = new Map();
   private negotiationPending: Map<string, boolean> = new Map();
-  private knownRoomMembers: Map<string, { userId: string; name: string }> = new Map();
 
   private isInCall = false;
   private localMicEnabled = false;
@@ -151,56 +149,12 @@ export class WebRTCManager {
     if (!currentUser) return;
 
     switch (message.type) {
-      case 'ROOM_STATE_SYNC': {
-        const syncMsg = message as RoomStateSyncMessage;
-        if (syncMsg.room?.users) {
-          syncMsg.room.users.forEach((u) => {
-            if (u.userId !== currentUser.userId) {
-              this.knownRoomMembers.set(u.userId, { userId: u.userId, name: u.name });
-              // If local user is currently sharing screen, prepare peer connection
-              if (this.isScreenSharing) {
-                this.getOrCreatePeerConnection(u.userId, u.name);
-              }
-            }
-          });
-          if (this.isScreenSharing) {
-            this.syncScreenTracksWithAllPeers();
-          }
-        }
-        break;
-      }
-
-      case 'USER_JOINED': {
-        const joinMsg = message as UserJoinedMessage;
-        const remoteUser = joinMsg.user;
-        const remoteUserId = remoteUser ? remoteUser.userId : (message as any).senderId;
-        const remoteUserName = remoteUser ? remoteUser.name : ((message as any).senderName || 'هم‌اتاقی');
-
-        if (!remoteUserId || remoteUserId === currentUser.userId) return;
-
-        console.log('[USER JOINED IN WEBRTC]', { remoteUserId, remoteUserName });
-        this.knownRoomMembers.set(remoteUserId, { userId: remoteUserId, name: remoteUserName });
-
-        // If local user is in call or screen sharing, connect to the newly joined peer immediately!
-        if (this.isScreenSharing || this.isInCall) {
-          console.log('[CONNECTING TO NEW ROOM MEMBER FOR SCREEN SHARE / CALL]', remoteUserId);
-          this.getOrCreatePeerConnection(remoteUserId, remoteUserName);
-          if (this.isScreenSharing) {
-            this.syncScreenTracksWithAllPeers();
-          } else if (!this.isPolitePeer(remoteUserId)) {
-            await this.requestNegotiation(remoteUserId);
-          }
-        }
-        break;
-      }
-
       case 'WEBRTC_JOIN': {
         const joinMsg = message as WebRTCJoinMessage;
         const remoteUserId = joinMsg.senderId;
         if (remoteUserId === currentUser.userId) return;
 
         console.log('[WEBRTC JOIN RECEIVED FROM PEER]', { remoteUserId, remoteName: joinMsg.senderName });
-        this.knownRoomMembers.set(remoteUserId, { userId: remoteUserId, name: joinMsg.senderName || 'کاربر' });
 
         // Update peer presence state
         const existingState = this.peerMediaStates.get(remoteUserId) || {
@@ -219,9 +173,8 @@ export class WebRTCManager {
         if (this.isInCall || this.isScreenSharing) {
           console.log('[CONNECTING TO NEW PEER]', { remoteUserId });
           this.getOrCreatePeerConnection(remoteUserId, joinMsg.senderName);
-          if (this.isScreenSharing) {
-            this.syncScreenTracksWithAllPeers();
-          } else if (!this.isPolitePeer(remoteUserId)) {
+          // If we are the impolite peer or caller, request negotiation
+          if (!this.isPolitePeer(remoteUserId)) {
             await this.requestNegotiation(remoteUserId);
           }
         }
@@ -239,7 +192,6 @@ export class WebRTCManager {
       case 'USER_LEFT': {
         const leftUserId = message.userId;
         console.log('[USER LEFT ROOM CLEANUP]', { leftUserId });
-        this.knownRoomMembers.delete(leftUserId);
         this.closePeerConnection(leftUserId);
         break;
       }
@@ -309,20 +261,19 @@ export class WebRTCManager {
       case 'SCREEN_SHARE_STARTED': {
         const remoteUserId = message.senderId;
         const screenStreamId = (message as any).payload?.screenStreamId;
-        console.log('[SCREEN SHARE STARTED SIGNAL RECEIVED]', { remoteUserId, screenStreamId });
+        console.log('[REMOTE SCREEN] SIGNAL RECEIVED', { remoteUserId, screenStreamId });
         if (remoteUserId === currentUser.userId) return;
 
+        // Store metadata unconditionally, decoupled from local screen state
+        this.knownRemoteScreenStreams.set(remoteUserId, {
+          userId: remoteUserId,
+          screenStreamId,
+          receivedAt: Date.now()
+        });
         if (screenStreamId) {
           this.remotePeerScreenStreamIds.set(remoteUserId, screenStreamId);
         }
-
-        this.knownRoomMembers.set(remoteUserId, {
-          userId: remoteUserId,
-          name: message.senderName || 'هم‌اتاقی'
-        });
-
-        // Ensure PeerConnection is created on receiver side
-        const pc = this.getOrCreatePeerConnection(remoteUserId, message.senderName);
+        console.log('[REMOTE SCREEN] Metadata stored', { remoteUserId, screenStreamId });
 
         const peer = this.peerMediaStates.get(remoteUserId) || {
           userId: remoteUserId,
@@ -334,55 +285,103 @@ export class WebRTCManager {
         };
         peer.screenSharing = true;
 
-        // Ensure a video transceiver is available to receive remote video track
-        const hasVideoReceiver = pc.getReceivers().some((r) => r.track?.kind === 'video');
-        if (!hasVideoReceiver) {
-          const hasVideoTransceiver = pc.getTransceivers().some((t) => t.receiver.track.kind === 'video');
-          if (!hasVideoTransceiver) {
-            try {
-              pc.addTransceiver('video', { direction: 'recvonly' });
-            } catch (e) {
-              console.warn('[SCREEN] Could not add recvonly video transceiver:', e);
+        // Race Condition Handling:
+        // Check if a video track arrived earlier and was buffered in bufferedVideoTracks
+        const buffered = this.bufferedVideoTracks.get(remoteUserId);
+        if (buffered && buffered.length > 0) {
+          let matchIndex = -1;
+          if (screenStreamId) {
+            matchIndex = buffered.findIndex((item) => item.stream.id === screenStreamId);
+          }
+          if (matchIndex === -1) {
+            matchIndex = buffered.length - 1; // Take latest buffered track
+          }
+
+          if (matchIndex !== -1) {
+            const matchedItem = buffered[matchIndex];
+            buffered.splice(matchIndex, 1);
+            if (buffered.length === 0) {
+              this.bufferedVideoTracks.delete(remoteUserId);
             }
+            console.log('[REMOTE SCREEN] Buffered track matched and routed', {
+              remoteUserId,
+              trackId: matchedItem.track.id,
+              streamId: matchedItem.stream.id,
+              screenStreamId
+            });
+            this.routeTrackToScreen(remoteUserId, matchedItem.track, matchedItem.stream);
+            console.log('[REMOTE SCREEN] Stream routed to ScreenSharePanel', {
+              remoteUserId,
+              streamId: matchedItem.stream.id
+            });
+            this.notifyRemoteScreenStreams();
+            this.notifyPeerStates();
+            console.log('[REMOTE SCREEN] React state updated');
+            break;
           }
         }
 
-        // 1. If cameraStream was mistakenly assigned the screen stream before this signal arrived, migrate it
+        // Check if cameraStream was tentatively assigned this video track while peer has camera off
         const existingCamera = this.remoteStreams.get(remoteUserId);
         if (existingCamera) {
-          const shouldMigrate =
-            (screenStreamId && existingCamera.id === screenStreamId) ||
-            !peer.cameraEnabled ||
-            !this.remoteScreenStreams.has(remoteUserId);
+          const videoTracks = existingCamera.getVideoTracks();
+          if (videoTracks.length > 0) {
+            const shouldMigrate =
+              (screenStreamId && existingCamera.id === screenStreamId) ||
+              !peer.cameraEnabled ||
+              videoTracks.length > 1;
 
-          if (shouldMigrate) {
-            console.log('[SCREEN DEBUG] Migrating misrouted stream from camera to screen stream:', remoteUserId);
-            this.remoteScreenStreams.set(remoteUserId, existingCamera);
-            this.remoteStreams.delete(remoteUserId);
-            peer.screenStream = existingCamera;
-            peer.stream = undefined;
-            this.notifyRemoteStreams();
+            if (shouldMigrate) {
+              const videoTrack = videoTracks[videoTracks.length - 1];
+              console.log('[REMOTE SCREEN] Migrating tentatively assigned camera video track to screen share:', {
+                remoteUserId,
+                trackId: videoTrack.id
+              });
+              existingCamera.removeTrack(videoTrack);
+              if (existingCamera.getTracks().length === 0) {
+                this.remoteStreams.delete(remoteUserId);
+              }
+              this.notifyRemoteStreams();
+
+              const screenStream = new MediaStream([videoTrack]);
+              this.remoteScreenStreams.set(remoteUserId, screenStream);
+              peer.screenStream = screenStream;
+              console.log('[REMOTE SCREEN] Stream routed to ScreenSharePanel', {
+                remoteUserId,
+                streamId: screenStream.id
+              });
+              this.notifyRemoteScreenStreams();
+              this.notifyPeerStates();
+              console.log('[REMOTE SCREEN] React state updated');
+              break;
+            }
           }
         }
 
-        // 2. Check if a screen track is already present in RTCRtpReceivers
-        pc.getReceivers().forEach((receiver) => {
-          if (receiver.track && receiver.track.kind === 'video') {
-            const cameraStream = this.remoteStreams.get(remoteUserId);
-            const isCameraTrack = cameraStream && cameraStream.getVideoTracks().some((t) => t.id === receiver.track.id);
-            if (!isCameraTrack || !peer.cameraEnabled) {
-              console.log('[SCREEN DEBUG] Found screen track in receivers during SCREEN_SHARE_STARTED:', receiver.track.id);
-              let screenStream = this.remoteScreenStreams.get(remoteUserId);
-              if (!screenStream) {
-                screenStream = new MediaStream([receiver.track]);
-                this.remoteScreenStreams.set(remoteUserId, screenStream);
-              } else if (!screenStream.getTracks().some((t) => t.id === receiver.track.id)) {
-                screenStream.addTrack(receiver.track);
+        // Check peer connection receivers for any unrouted video track
+        const pc = this.peerConnections.get(remoteUserId);
+        if (pc) {
+          pc.getReceivers().forEach((receiver) => {
+            if (receiver.track && receiver.track.kind === 'video' && receiver.track.readyState === 'live') {
+              const currentScreenStream = this.remoteScreenStreams.get(remoteUserId);
+              const alreadyInScreen = currentScreenStream && currentScreenStream.getTracks().some((t) => t.id === receiver.track.id);
+              if (!alreadyInScreen) {
+                const isKnownCamera = this.remoteStreams.get(remoteUserId)?.getVideoTracks().some((t) => t.id === receiver.track.id);
+                if (!isKnownCamera || !peer.cameraEnabled) {
+                  console.log('[REMOTE SCREEN] Found unrouted receiver video track, routing to screen:', receiver.track.id);
+                  this.routeTrackToScreen(remoteUserId, receiver.track, new MediaStream([receiver.track]));
+                  console.log('[REMOTE SCREEN] Stream routed to ScreenSharePanel', {
+                    remoteUserId,
+                    trackId: receiver.track.id
+                  });
+                  this.notifyRemoteScreenStreams();
+                  this.notifyPeerStates();
+                  console.log('[REMOTE SCREEN] React state updated');
+                }
               }
-              peer.screenStream = screenStream;
             }
-          }
-        });
+          });
+        }
 
         this.peerMediaStates.set(remoteUserId, peer);
         this.notifyRemoteScreenStreams();
@@ -395,7 +394,10 @@ export class WebRTCManager {
         console.log('[SCREEN SHARE STOPPED SIGNAL RECEIVED]', { remoteUserId });
         if (remoteUserId === currentUser.userId) return;
 
+        this.knownRemoteScreenStreams.delete(remoteUserId);
+        this.bufferedVideoTracks.delete(remoteUserId);
         this.remotePeerScreenStreamIds.delete(remoteUserId);
+
         const peer = this.peerMediaStates.get(remoteUserId);
         if (peer) {
           peer.screenSharing = false;
@@ -481,6 +483,17 @@ export class WebRTCManager {
       });
     }
 
+    // 1c. Ensure Transceiver capability for receiving Video (both camera and screen share)
+    // independent of local media, so remote peer video/screen tracks can be received immediately
+    const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === 'video');
+    if (videoTransceivers.length === 0) {
+      try {
+        pc.addTransceiver('video', { direction: 'recvonly' });
+      } catch (err) {
+        console.warn('[WEBRTC] Add initial video recvonly transceiver error:', err);
+      }
+    }
+
     // 2. Handle ICE Candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -488,7 +501,7 @@ export class WebRTCManager {
       }
     };
 
-    // 3. Handle Remote Track (Step 5, 6, 7)
+    // 3. Handle Remote Track
     pc.ontrack = (event) => {
       console.log('[REMOTE TRACK RECEIVED]', {
         peerId: remoteUserId,
@@ -508,84 +521,131 @@ export class WebRTCManager {
       const incomingStream = event.streams[0] || new MediaStream([event.track]);
       const cameraStream = this.remoteStreams.get(remoteUserId);
       const peerState = this.peerMediaStates.get(remoteUserId);
-      const knownScreenStreamId = this.remotePeerScreenStreamIds.get(remoteUserId);
-      const existingScreenStream = this.remoteScreenStreams.get(remoteUserId);
+      const screenMeta = this.knownRemoteScreenStreams.get(remoteUserId);
 
-      // Distinguish screen share track vs camera/mic track
-      let isScreenShare = false;
+      // Handle AUDIO track
+      if (event.track.kind === 'audio') {
+        if (screenMeta?.screenStreamId && incomingStream.id === screenMeta.screenStreamId) {
+          console.log('[REMOTE SCREEN] Audio track matched screen share stream:', incomingStream.id);
+          this.routeTrackToScreen(remoteUserId, event.track, incomingStream);
+          this.notifyRemoteScreenStreams();
+          return;
+        }
 
-      if (event.track.kind === 'video') {
-        // 1. Matches known screen stream ID transmitted via signaling
-        if (knownScreenStreamId && incomingStream.id === knownScreenStreamId) {
-          isScreenShare = true;
-        }
-        // 2. Peer is marked as screen sharing and incoming stream differs from camera stream
-        else if (peerState?.screenSharing && (!cameraStream || incomingStream.id !== cameraStream.id)) {
-          isScreenShare = true;
-        }
-        // 3. Camera stream already exists and has a video track, incoming stream is a separate stream
-        else if (cameraStream && cameraStream.getVideoTracks().length > 0 && incomingStream.id !== cameraStream.id) {
-          isScreenShare = true;
-        }
-        // 4. Track label or stream label explicitly indicates screen share
-        else if (event.track.label.toLowerCase().includes('screen') || incomingStream.id.toLowerCase().includes('screen')) {
-          isScreenShare = true;
-        }
-      } else if (event.track.kind === 'audio') {
-        // Handle screen share audio if present
-        if (knownScreenStreamId && incomingStream.id === knownScreenStreamId) {
-          isScreenShare = true;
-        } else if (existingScreenStream && incomingStream.id === existingScreenStream.id) {
-          isScreenShare = true;
-        }
-      }
-
-      if (isScreenShare) {
-        console.log('[SCREEN DEBUG] Route track to SCREEN STREAM:', remoteUserId, event.track.id, event.track.kind);
-        let screenStream = this.remoteScreenStreams.get(remoteUserId);
-        if (!screenStream || screenStream.id !== incomingStream.id) {
-          screenStream = incomingStream;
-          this.remoteScreenStreams.set(remoteUserId, screenStream);
+        let remoteStream = cameraStream;
+        if (!remoteStream) {
+          remoteStream = incomingStream;
+          this.remoteStreams.set(remoteUserId, remoteStream);
         } else {
-          if (!screenStream.getTracks().some((t) => t.id === event.track.id)) {
-            screenStream.addTrack(event.track);
+          if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+            remoteStream.addTrack(event.track);
           }
         }
-
         if (peerState) {
-          peerState.screenStream = screenStream;
-          peerState.screenSharing = true;
+          peerState.stream = remoteStream;
         }
-
-        console.log('[SCREEN DEBUG] Remote screen stream attached:', remoteUserId, {
-          streamId: screenStream.id,
-          videoTracks: screenStream.getVideoTracks().length,
-          audioTracks: screenStream.getAudioTracks().length
-        });
-
-        this.notifyRemoteScreenStreams();
+        this.notifyRemoteStreams();
         this.notifyPeerStates();
         return;
       }
 
-      // Default: Camera / Microphone Stream
-      console.log('[SCREEN DEBUG] Route track to CAMERA/MIC STREAM:', remoteUserId, event.track.id, event.track.kind);
-      let remoteStream = cameraStream;
-      if (!remoteStream) {
-        remoteStream = incomingStream;
-        this.remoteStreams.set(remoteUserId, remoteStream);
-      } else {
-        if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
-          remoteStream.addTrack(event.track);
+      // Handle VIDEO track
+      if (event.track.kind === 'video') {
+        console.log('[REMOTE SCREEN] Track received', {
+          remoteUserId,
+          trackId: event.track.id,
+          streamId: incomingStream.id,
+          label: event.track.label
+        });
+
+        // Determine if this video track is a screen share track
+        let isScreenShare = false;
+
+        // 1. Matches known screen stream ID from signaling metadata
+        if (screenMeta?.screenStreamId && incomingStream.id === screenMeta.screenStreamId) {
+          isScreenShare = true;
+        }
+        // 2. Peer is already flagged as screen sharing
+        else if (peerState?.screenSharing) {
+          if (!peerState.cameraEnabled || !cameraStream || incomingStream.id !== cameraStream.id) {
+            isScreenShare = true;
+          } else if (cameraStream.getVideoTracks().length > 0) {
+            isScreenShare = true;
+          }
+        }
+        // 3. Track or stream label explicitly indicates screen share
+        else if (
+          event.track.label.toLowerCase().includes('screen') ||
+          incomingStream.id.toLowerCase().includes('screen')
+        ) {
+          isScreenShare = true;
+        }
+
+        if (isScreenShare) {
+          console.log('[REMOTE SCREEN] Matching metadata', { remoteUserId, trackId: event.track.id });
+          this.routeTrackToScreen(remoteUserId, event.track, incomingStream);
+          console.log('[REMOTE SCREEN] Stream routed to ScreenSharePanel', {
+            remoteUserId,
+            streamId: incomingStream.id
+          });
+          this.notifyRemoteScreenStreams();
+          this.notifyPeerStates();
+          console.log('[REMOTE SCREEN] React state updated');
+          return;
+        }
+
+        // If metadata has not arrived yet: BUFFER the video track!
+        console.log('[REMOTE SCREEN] Track arrived before metadata, buffering', {
+          remoteUserId,
+          trackId: event.track.id,
+          streamId: incomingStream.id
+        });
+        const buffer = this.bufferedVideoTracks.get(remoteUserId) || [];
+        buffer.push({ track: event.track, stream: incomingStream, addedAt: Date.now() });
+        this.bufferedVideoTracks.set(remoteUserId, buffer);
+
+        // Tentatively attach to cameraStream ONLY if camera is explicitly enabled by peer
+        if (peerState?.cameraEnabled) {
+          console.log('[CAMERA TRACK] Assigned video track to camera stream (peer camera enabled):', remoteUserId);
+          let remoteStream = cameraStream;
+          if (!remoteStream) {
+            remoteStream = incomingStream;
+            this.remoteStreams.set(remoteUserId, remoteStream);
+          } else {
+            if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+              remoteStream.addTrack(event.track);
+            }
+          }
+          if (peerState) {
+            peerState.stream = remoteStream;
+          }
+          this.notifyRemoteStreams();
+          this.notifyPeerStates();
+        } else {
+          // If peer camera is NOT enabled, check again after short delay in case signal was slightly delayed
+          setTimeout(() => {
+            const currentMeta = this.knownRemoteScreenStreams.get(remoteUserId);
+            const currentPeer = this.peerMediaStates.get(remoteUserId);
+            if (currentMeta || currentPeer?.screenSharing) {
+              const currentBuf = this.bufferedVideoTracks.get(remoteUserId);
+              if (currentBuf && currentBuf.some((b) => b.track.id === event.track.id)) {
+                console.log('[REMOTE SCREEN] Buffered track matched and routed (delayed check):', {
+                  remoteUserId,
+                  trackId: event.track.id
+                });
+                this.routeTrackToScreen(remoteUserId, event.track, incomingStream);
+                console.log('[REMOTE SCREEN] Stream routed to ScreenSharePanel', {
+                  remoteUserId,
+                  streamId: incomingStream.id
+                });
+                this.notifyRemoteScreenStreams();
+                this.notifyPeerStates();
+                console.log('[REMOTE SCREEN] React state updated');
+              }
+            }
+          }, 60);
         }
       }
-
-      if (peerState) {
-        peerState.stream = remoteStream;
-      }
-
-      this.notifyRemoteStreams();
-      this.notifyPeerStates();
     };
 
     // 4. Handle Negotiation Needed with centralized queue (Step 3 & Step 8)
@@ -1062,10 +1122,7 @@ export class WebRTCManager {
         this.stopScreenShare();
       };
 
-      // Add screen tracks to all peer connections and initiate negotiation
-      this.syncScreenTracksWithAllPeers();
-
-      // Transmit screenStreamId to all peers via signaling
+      // 1. Transmit screenStreamId to all peers via signaling FIRST so remote peers are prepared
       realTimeClient.emitScreenShareStarted({ screenStreamId: displayStream.id });
       realTimeClient.emitMediaStateChanged({
         micEnabled: this.localMicEnabled,
@@ -1074,6 +1131,9 @@ export class WebRTCManager {
         screenSharingEnabled: true,
         updatedAt: Date.now()
       });
+
+      // 2. Add screen tracks to all peer connections and initiate negotiation
+      this.syncScreenTracksWithAllPeers();
 
       this.notifyLocalScreenStream();
       this.notifyScreenSharing();
@@ -1100,37 +1160,22 @@ export class WebRTCManager {
     if (!this.localScreenStream) return;
     const screenTracks = this.localScreenStream.getTracks();
 
-    // Gather all remote user IDs in the room from all available sources
-    const remoteUsers = new Map<string, string>(); // userId -> userName
+    // Gather all remote user IDs in the room
+    const remoteUserIds = new Set<string>();
     const currentUserId = realTimeClient.getCurrentUser()?.userId;
 
-    this.knownRoomMembers.forEach((member, userId) => {
-      if (userId && userId !== currentUserId) remoteUsers.set(userId, member.name);
-    });
-
-    const roomMembers = roomService.getCurrentRoomMembers();
-    roomMembers.forEach((user) => {
-      if (user.userId && user.userId !== currentUserId) {
-        remoteUsers.set(user.userId, user.name);
-      }
-    });
-
-    this.peerMediaStates.forEach((state, userId) => {
-      if (userId && userId !== currentUserId) {
-        if (!remoteUsers.has(userId)) remoteUsers.set(userId, state.name || 'هم‌اتاقی');
-      }
+    this.peerMediaStates.forEach((_, userId) => {
+      if (userId && userId !== currentUserId) remoteUserIds.add(userId);
     });
 
     this.peerConnections.forEach((_, userId) => {
-      if (userId && userId !== currentUserId && !remoteUsers.has(userId)) {
-        remoteUsers.set(userId, 'هم‌اتاقی');
-      }
+      if (userId && userId !== currentUserId) remoteUserIds.add(userId);
     });
 
-    console.log('[SCREEN DEBUG] Synchronizing screen tracks with remote users count:', remoteUsers.size);
+    console.log('[SCREEN DEBUG] Synchronizing screen tracks with remote users count:', remoteUserIds.size);
 
-    remoteUsers.forEach((remoteUserName, remoteUserId) => {
-      const pc = this.getOrCreatePeerConnection(remoteUserId, remoteUserName);
+    remoteUserIds.forEach((remoteUserId) => {
+      const pc = this.getOrCreatePeerConnection(remoteUserId);
       if (pc.signalingState === 'closed') return;
 
       // Step 2: Debug peer state before adding screen track
@@ -1190,10 +1235,7 @@ export class WebRTCManager {
       });
 
       // Request renegotiation cleanly using centralized queue (Step 3)
-      // Trigger negotiation if tracks were just added OR if the peer connection has screen senders
-      // so that newly connected peers immediately receive an offer containing the screen track!
-      const hasScreenTrack = pc.getSenders().some((s) => s.track && screenTracks.some((st) => st.id === s.track!.id));
-      if (tracksAdded || hasScreenTrack || pc.signalingState === 'stable') {
+      if (tracksAdded) {
         this.requestNegotiation(remoteUserId);
       }
     });
@@ -1275,6 +1317,61 @@ export class WebRTCManager {
   }
 
   /**
+   * Routes a remote video or audio track to the peer's remoteScreenStream unconditionally.
+   * Attaches onended handler to cleanly remove the screen stream when remote peer stops sharing.
+   */
+  private routeTrackToScreen(remoteUserId: string, track: MediaStreamTrack, incomingStream: MediaStream): void {
+    let screenStream = this.remoteScreenStreams.get(remoteUserId);
+    if (!screenStream) {
+      screenStream = new MediaStream([track]);
+      this.remoteScreenStreams.set(remoteUserId, screenStream);
+    } else {
+      if (!screenStream.getTracks().some((t) => t.id === track.id)) {
+        screenStream.addTrack(track);
+      }
+    }
+
+    // Attach onended to clean up when remote track finishes
+    track.onended = () => {
+      this.handleRemoteScreenTrackEnded(remoteUserId, track.id);
+    };
+
+    const peer = this.peerMediaStates.get(remoteUserId) || {
+      userId: remoteUserId,
+      name: 'هم‌اتاقی',
+      micEnabled: true,
+      cameraEnabled: false,
+      callJoined: true,
+      updatedAt: Date.now()
+    };
+    peer.screenStream = screenStream;
+    peer.screenSharing = true;
+    this.peerMediaStates.set(remoteUserId, peer);
+  }
+
+  /**
+   * Handles remote screen track ending
+   */
+  private handleRemoteScreenTrackEnded(remoteUserId: string, trackId: string): void {
+    console.log('[REMOTE SCREEN TRACK ENDED]', { remoteUserId, trackId });
+    const screenStream = this.remoteScreenStreams.get(remoteUserId);
+    if (screenStream) {
+      const remainingTracks = screenStream.getTracks().filter((t) => t.id !== trackId);
+      if (remainingTracks.length === 0) {
+        this.remoteScreenStreams.delete(remoteUserId);
+        this.knownRemoteScreenStreams.delete(remoteUserId);
+        const peer = this.peerMediaStates.get(remoteUserId);
+        if (peer) {
+          peer.screenSharing = false;
+          peer.screenStream = undefined;
+        }
+        this.notifyRemoteScreenStreams();
+        this.notifyPeerStates();
+      }
+    }
+  }
+
+  /**
    * Closes a single peer connection and cleans up its remote stream & screen stream.
    */
   public closePeerConnection(remoteUserId: string): void {
@@ -1301,6 +1398,8 @@ export class WebRTCManager {
       this.remoteScreenStreams.delete(remoteUserId);
     }
 
+    this.knownRemoteScreenStreams.delete(remoteUserId);
+    this.bufferedVideoTracks.delete(remoteUserId);
     this.iceCandidatesQueue.delete(remoteUserId);
     this.makingOffer.delete(remoteUserId);
     this.isSettingRemoteAnswerPending.delete(remoteUserId);
@@ -1369,6 +1468,8 @@ export class WebRTCManager {
     });
     this.remoteScreenStreams.clear();
 
+    this.knownRemoteScreenStreams.clear();
+    this.bufferedVideoTracks.clear();
     this.iceCandidatesQueue.clear();
     this.makingOffer.clear();
     this.isSettingRemoteAnswerPending.clear();
