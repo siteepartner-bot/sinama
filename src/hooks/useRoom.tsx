@@ -1,6 +1,17 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useRef } from 'react';
-import { Room, RoomUser, MediaState, ChatMessage, RoomState, ViewType, ConnectionStatus, VideoSource } from '../types';
+import {
+  Room,
+  RoomUser,
+  MediaState,
+  ChatMessage,
+  RoomState,
+  ViewType,
+  ConnectionStatus,
+  VideoSource,
+  PeerMediaState
+} from '../types';
 import { roomService } from '../services/roomService';
+import { webRTCManager } from '../services/webRTCManager';
 import { parseYouTubeUrl, parseAparatUrl } from '../utils/mediaParsers';
 
 interface RoomContextType {
@@ -18,6 +29,12 @@ interface RoomContextType {
   joinRoom: (userName: string, roomId: string, autoCreateIfNotFound?: boolean) => Promise<boolean>;
   joinDirectly: (userName: string) => Promise<boolean>;
   leaveRoom: () => Promise<void>;
+  localStream: MediaStream | null;
+  remoteStreams: Map<string, MediaStream>;
+  peerMediaStates: Map<string, PeerMediaState>;
+  isInCall: boolean;
+  joinCall: (initialMic?: boolean, initialCamera?: boolean) => Promise<boolean>;
+  leaveCall: () => void;
   toggleMic: () => Promise<void>;
   toggleCamera: () => Promise<void>;
   toggleScreenShare: () => Promise<void>;
@@ -46,6 +63,12 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connected');
 
+  // WebRTC Media States
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [peerMediaStates, setPeerMediaStates] = useState<Map<string, PeerMediaState>>(new Map());
+  const [isInCall, setIsInCall] = useState<boolean>(false);
+
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const statusUnsubRef = useRef<(() => void) | null>(null);
 
@@ -59,6 +82,18 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
         statusUnsubRef.current();
       }
     };
+  }, []);
+
+  // Subscribe to WebRTC manager state updates
+  useEffect(() => {
+    const unsub = webRTCManager.subscribe({
+      onLocalStreamChange: (stream) => setLocalStream(stream),
+      onRemoteStreamsChange: (streams) => setRemoteStreams(streams),
+      onPeerStatesChange: (states) => setPeerMediaStates(states),
+      onCallStateChange: (inCall) => setIsInCall(inCall),
+      onError: (errMsg) => setError(errMsg)
+    });
+    return () => unsub();
   }, []);
 
   // Helper to change view and synchronize URL history
@@ -236,6 +271,9 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
 
   // Leave Room
   const leaveRoom = async () => {
+    // Teardown WebRTC call immediately
+    webRTCManager.cleanup();
+
     if (currentRoom && currentUser) {
       try {
         await roomService.leaveRoom(currentRoom.roomId, currentUser.userId);
@@ -259,19 +297,42 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     window.history.pushState(null, '', '/');
   };
 
-  // User media controls
+  // WebRTC Real-Time Voice/Video Call Controls
+  const joinCall = async (initialMic = true, initialCamera = false): Promise<boolean> => {
+    const success = await webRTCManager.joinCall(initialMic, initialCamera);
+    if (success && currentUser) {
+      setCurrentUser((prev) => (prev ? { ...prev, callJoined: true, micEnabled: initialMic, cameraEnabled: initialCamera } : null));
+    }
+    return success;
+  };
+
+  const leaveCall = () => {
+    webRTCManager.leaveCall();
+    if (currentUser) {
+      setCurrentUser((prev) => (prev ? { ...prev, callJoined: false, micEnabled: false, cameraEnabled: false } : null));
+    }
+  };
+
   const toggleMic = async () => {
-    if (!currentRoom || !currentUser) return;
-    const nextState = !currentUser.micEnabled;
-    await roomService.updateUserMedia(currentRoom.roomId, currentUser.userId, { micEnabled: nextState });
-    setCurrentUser((prev) => (prev ? { ...prev, micEnabled: nextState } : null));
+    if (!isInCall) {
+      await joinCall(true, false);
+      return;
+    }
+    const isMicOn = await webRTCManager.toggleMic();
+    if (currentUser) {
+      setCurrentUser((prev) => (prev ? { ...prev, micEnabled: isMicOn } : null));
+    }
   };
 
   const toggleCamera = async () => {
-    if (!currentRoom || !currentUser) return;
-    const nextState = !currentUser.cameraEnabled;
-    await roomService.updateUserMedia(currentRoom.roomId, currentUser.userId, { cameraEnabled: nextState });
-    setCurrentUser((prev) => (prev ? { ...prev, cameraEnabled: nextState } : null));
+    if (!isInCall) {
+      await joinCall(true, true);
+      return;
+    }
+    const isCamOn = await webRTCManager.toggleCamera();
+    if (currentUser) {
+      setCurrentUser((prev) => (prev ? { ...prev, cameraEnabled: isCamOn } : null));
+    }
   };
 
   const toggleScreenShare = async () => {
@@ -465,6 +526,12 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
         joinRoom,
         joinDirectly,
         leaveRoom,
+        localStream,
+        remoteStreams,
+        peerMediaStates,
+        isInCall,
+        joinCall,
+        leaveCall,
         toggleMic,
         toggleCamera,
         toggleScreenShare,

@@ -280,6 +280,98 @@ export class RealTimeClient {
     });
   }
 
+  // --- WebRTC Signaling Broadcasters & Targeted Routers ---
+
+  public emitWebRTCJoin(): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[WEBRTC JOIN]', { userId: this.currentUser.userId, name: this.currentUser.name });
+    this.sendMessage({
+      type: 'WEBRTC_JOIN',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      timestamp: Date.now()
+    });
+  }
+
+  public emitWebRTCLeave(): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[WEBRTC LEAVE]', { userId: this.currentUser.userId });
+    this.sendMessage({
+      type: 'WEBRTC_LEAVE',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      timestamp: Date.now()
+    });
+  }
+
+  public emitWebRTCOffer(toUserId: string, payload: RTCSessionDescriptionInit): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[OFFER SENT]', { fromUserId: this.currentUser.userId, toUserId });
+    this.sendMessage({
+      type: 'WEBRTC_OFFER',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      toUserId,
+      payload,
+      timestamp: Date.now()
+    });
+  }
+
+  public emitWebRTCAnswer(toUserId: string, payload: RTCSessionDescriptionInit): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[ANSWER SENT]', { fromUserId: this.currentUser.userId, toUserId });
+    this.sendMessage({
+      type: 'WEBRTC_ANSWER',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      toUserId,
+      payload,
+      timestamp: Date.now()
+    });
+  }
+
+  public emitWebRTCIceCandidate(toUserId: string, payload: RTCIceCandidateInit): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[ICE CANDIDATE SENT]', { fromUserId: this.currentUser.userId, toUserId });
+    this.sendMessage({
+      type: 'WEBRTC_ICE_CANDIDATE',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      toUserId,
+      payload,
+      timestamp: Date.now()
+    });
+  }
+
+  public emitMediaStateChanged(payload: {
+    micEnabled: boolean;
+    cameraEnabled: boolean;
+    callJoined: boolean;
+    updatedAt: number;
+  }): void {
+    if (!this.roomId || !this.currentUser) return;
+    this.sendMessage({
+      type: 'MEDIA_STATE_CHANGED',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      payload,
+      timestamp: Date.now()
+    });
+  }
+
+  public getCurrentUser(): RoomUser | null {
+    return this.currentUser;
+  }
+
+  public getRoomId(): string | null {
+    return this.roomId;
+  }
+
   // --- Internal Connection Logic ---
 
   private initBroadcastChannel(roomId: string): void {
@@ -404,6 +496,11 @@ export class RealTimeClient {
 
     // Ignore echoes of our own messages from BroadcastChannel or storage
     if ('senderId' in message && message.senderId === this.currentUser?.userId) {
+      return;
+    }
+
+    // Ignore targeted messages meant for a different peer
+    if ('toUserId' in message && message.toUserId !== this.currentUser?.userId) {
       return;
     }
 

@@ -470,6 +470,43 @@ class DurableRoomService implements IRoomService {
         this.notifySubscribers(roomId);
         break;
       }
+
+      case 'WEBRTC_JOIN': {
+        const uIdx = room.users.findIndex((u) => u.userId === msg.senderId);
+        if (uIdx >= 0) {
+          room.users[uIdx].callJoined = true;
+          rooms[roomId] = room;
+          this.saveRoomsMap(rooms);
+          this.notifySubscribers(roomId);
+        }
+        break;
+      }
+
+      case 'WEBRTC_LEAVE': {
+        const uIdx = room.users.findIndex((u) => u.userId === msg.senderId);
+        if (uIdx >= 0) {
+          room.users[uIdx].callJoined = false;
+          room.users[uIdx].micEnabled = false;
+          room.users[uIdx].cameraEnabled = false;
+          rooms[roomId] = room;
+          this.saveRoomsMap(rooms);
+          this.notifySubscribers(roomId);
+        }
+        break;
+      }
+
+      case 'MEDIA_STATE_CHANGED': {
+        const uIdx = room.users.findIndex((u) => u.userId === msg.senderId);
+        if (uIdx >= 0) {
+          room.users[uIdx].micEnabled = msg.payload.micEnabled;
+          room.users[uIdx].cameraEnabled = msg.payload.cameraEnabled;
+          room.users[uIdx].callJoined = msg.payload.callJoined;
+          rooms[roomId] = room;
+          this.saveRoomsMap(rooms);
+          this.notifySubscribers(roomId);
+        }
+        break;
+      }
     }
   }
 

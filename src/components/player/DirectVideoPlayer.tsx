@@ -58,11 +58,9 @@ export function DirectVideoPlayer({
   const [autoplayBlocked, setAutoplayBlocked] = useState<boolean>(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
-  // Prevent programmatic remote updates from looping back as local events
-  const suppressPlayBroadcast = useRef<number>(0);
-  const suppressPauseBroadcast = useRef<number>(0);
-  const suppressSeekBroadcast = useRef<number>(0);
-  const suppressRateBroadcast = useRef<number>(0);
+  // Synchronization flags & tracking
+  const isApplyingRemoteRef = useRef<boolean>(false);
+  const lastLocalActionTimeRef = useRef<number>(0);
   const lastHandledUpdatedAt = useRef<number>(updatedAt);
 
   // Auto hide controls
@@ -102,22 +100,27 @@ export function DirectVideoPlayer({
     const video = videoRef.current;
     if (!video) return;
 
-    const isNewEvent = updatedAt && updatedAt !== lastHandledUpdatedAt.current;
+    // Check if this is a new remote event or a fresh timestamp
+    const isNewEvent = Boolean(updatedAt && updatedAt !== lastHandledUpdatedAt.current);
     if (isNewEvent) {
       lastHandledUpdatedAt.current = updatedAt;
     }
 
-    // 1. Play / Pause Synchronization
+    // Mark that we are applying remote updates to avoid native event feedback loop
+    isApplyingRemoteRef.current = true;
+    const resetRemoteFlagTimeout = setTimeout(() => {
+      isApplyingRemoteRef.current = false;
+    }, 400);
+
+    // 1. Target time alignment (if specified and drift exceeds 0.3s)
+    if (targetTime !== undefined && (isNewEvent || Math.abs(video.currentTime - targetTime) > 0.4)) {
+      video.currentTime = targetTime;
+      setCurrentTime(targetTime);
+    }
+
+    // 2. Play / Pause Synchronization
     if (initialPlayState !== undefined) {
       if (initialPlayState && video.paused) {
-        suppressPlayBroadcast.current++;
-        // If targetTime specified and drift > 0.4s, align time too
-        if (targetTime !== undefined && Math.abs(video.currentTime - targetTime) > 0.4) {
-          suppressSeekBroadcast.current++;
-          video.currentTime = targetTime;
-          setCurrentTime(targetTime);
-        }
-
         video
           .play()
           .then(() => {
@@ -126,7 +129,6 @@ export function DirectVideoPlayer({
           })
           .catch((err) => {
             console.warn('Autoplay blocked, falling back to muted playback:', err);
-            suppressPlayBroadcast.current++;
             video.muted = true;
             setIsMuted(true);
             video
@@ -140,33 +142,20 @@ export function DirectVideoPlayer({
               });
           });
       } else if (!initialPlayState && !video.paused) {
-        suppressPauseBroadcast.current++;
         video.pause();
         setIsPlaying(false);
-        if (targetTime !== undefined && Math.abs(video.currentTime - targetTime) > 0.3) {
-          suppressSeekBroadcast.current++;
-          video.currentTime = targetTime;
-          setCurrentTime(targetTime);
-        }
-      }
-    }
-
-    // 2. Explicit remote seek event
-    if (isNewEvent && targetTime !== undefined) {
-      const drift = Math.abs(video.currentTime - targetTime);
-      if (drift > 0.3) {
-        suppressSeekBroadcast.current++;
-        video.currentTime = targetTime;
-        setCurrentTime(targetTime);
       }
     }
 
     // 3. Playback rate synchronization
     if (externalPlaybackRate && Math.abs(video.playbackRate - externalPlaybackRate) > 0.05) {
-      suppressRateBroadcast.current++;
       video.playbackRate = externalPlaybackRate;
       setPlaybackRate(externalPlaybackRate);
     }
+
+    return () => {
+      clearTimeout(resetRemoteFlagTimeout);
+    };
   }, [initialPlayState, updatedAt, targetTime, externalPlaybackRate]);
 
   // Fullscreen change listener
@@ -198,9 +187,9 @@ export function DirectVideoPlayer({
 
     const nextPlaying = video.paused || video.ended;
     const time = video.currentTime;
+    lastLocalActionTimeRef.current = Date.now();
 
     if (nextPlaying) {
-      suppressPlayBroadcast.current = 1;
       video.play().catch((e) => {
         console.warn('Play request failed:', e);
         setIsPlaying(false);
@@ -209,7 +198,6 @@ export function DirectVideoPlayer({
       onPlayChange?.(true, time);
       showFeedbackToast('پخش برای همه همگام شد');
     } else {
-      suppressPauseBroadcast.current = 1;
       video.pause();
       setIsPlaying(false);
       onPlayChange?.(false, time);
@@ -223,7 +211,7 @@ export function DirectVideoPlayer({
     if (!video) return;
 
     const clampedTime = Math.max(0, Math.min(time, duration > 0 ? duration : Infinity));
-    suppressSeekBroadcast.current = 1;
+    lastLocalActionTimeRef.current = Date.now();
     video.currentTime = clampedTime;
     setCurrentTime(clampedTime);
     setIsEnded(false);
@@ -236,7 +224,7 @@ export function DirectVideoPlayer({
   const handlePlaybackRateChange = useCallback((rate: number) => {
     const video = videoRef.current;
     if (!video) return;
-    suppressRateBroadcast.current = 1;
+    lastLocalActionTimeRef.current = Date.now();
     video.playbackRate = rate;
     setPlaybackRate(rate);
     onRateChange?.(rate);
@@ -373,28 +361,26 @@ export function DirectVideoPlayer({
     setIsPlaying(true);
     setAutoplayBlocked(false);
 
-    if (suppressPlayBroadcast.current > 0) {
-      suppressPlayBroadcast.current--;
+    // If this play event was triggered by remote sync or our own explicit local UI click handler, don't broadcast duplicate
+    if (isApplyingRemoteRef.current || realTimeClient.isRemoteEventActive || Date.now() - lastLocalActionTimeRef.current < 500) {
       return;
     }
 
-    if (!realTimeClient.isRemoteEventActive) {
-      const video = videoRef.current;
-      const time = video ? video.currentTime : currentTime;
-      onPlayChange?.(true, time);
-      showFeedbackToast('پخش برای همه همگام شد');
-    }
+    const video = videoRef.current;
+    const time = video ? video.currentTime : currentTime;
+    onPlayChange?.(true, time);
+    showFeedbackToast('پخش برای همه همگام شد');
   };
 
   const onPause = () => {
     setIsPlaying(false);
 
-    if (suppressPauseBroadcast.current > 0) {
-      suppressPauseBroadcast.current--;
+    // If this pause event was triggered by remote sync or our own explicit local UI click handler, don't broadcast duplicate
+    if (isApplyingRemoteRef.current || realTimeClient.isRemoteEventActive || Date.now() - lastLocalActionTimeRef.current < 500) {
       return;
     }
 
-    if (!realTimeClient.isRemoteEventActive && !videoRef.current?.ended) {
+    if (!videoRef.current?.ended) {
       const video = videoRef.current;
       const time = video ? video.currentTime : currentTime;
       onPlayChange?.(false, time);
@@ -407,15 +393,13 @@ export function DirectVideoPlayer({
     if (!video) return;
     setCurrentTime(video.currentTime);
 
-    if (suppressSeekBroadcast.current > 0) {
-      suppressSeekBroadcast.current--;
+    // If this seek event was triggered by remote sync or our own explicit local UI click handler, don't broadcast duplicate
+    if (isApplyingRemoteRef.current || realTimeClient.isRemoteEventActive || Date.now() - lastLocalActionTimeRef.current < 500) {
       return;
     }
 
-    if (!realTimeClient.isRemoteEventActive) {
-      onSeekChange?.(video.currentTime);
-      showFeedbackToast('تغییر زمان برای همه همگام شد');
-    }
+    onSeekChange?.(video.currentTime);
+    showFeedbackToast('تغییر زمان برای همه همگام شد');
   };
 
   const onRateChangeInternal = () => {
@@ -423,20 +407,18 @@ export function DirectVideoPlayer({
     if (!video) return;
     setPlaybackRate(video.playbackRate);
 
-    if (suppressRateBroadcast.current > 0) {
-      suppressRateBroadcast.current--;
+    // If this rate event was triggered by remote sync or our own explicit local UI click handler, don't broadcast duplicate
+    if (isApplyingRemoteRef.current || realTimeClient.isRemoteEventActive || Date.now() - lastLocalActionTimeRef.current < 500) {
       return;
     }
 
-    if (!realTimeClient.isRemoteEventActive) {
-      onRateChange?.(video.playbackRate);
-    }
+    onRateChange?.(video.playbackRate);
   };
 
   const onVideoEnded = () => {
     setIsPlaying(false);
     setIsEnded(true);
-    if (!realTimeClient.isRemoteEventActive) {
+    if (!isApplyingRemoteRef.current && !realTimeClient.isRemoteEventActive) {
       onEnded?.();
     }
   };

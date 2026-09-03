@@ -8,6 +8,7 @@ import { MembersPanel } from './MembersPanel';
 import { ChatPanel } from './ChatPanel';
 import { MediaSourcePanel } from './MediaSourcePanel';
 import { CallControls } from './CallControls';
+import { CallGrid } from './CallGrid';
 
 export function RoomPage() {
   const {
@@ -23,6 +24,7 @@ export function RoomPage() {
 
   const [showChat, setShowChat] = useState(true);
   const [showMembers, setShowMembers] = useState(true);
+  const [isCallGridCollapsed, setIsCallGridCollapsed] = useState(false);
   const [directUserName, setDirectUserName] = useState('');
   const [directJoinError, setDirectJoinError] = useState('');
   const [isJoiningDirectly, setIsJoiningDirectly] = useState(false);
@@ -257,6 +259,14 @@ export function RoomPage() {
           {/* Theater Screen Canvas */}
           <div className="w-full">
             <VideoPlayer />
+          </div>
+
+          {/* WebRTC Video / Audio Call Grid */}
+          <div className="w-full">
+            <CallGrid
+              isCollapsed={isCallGridCollapsed}
+              onToggleCollapse={() => setIsCallGridCollapsed(!isCallGridCollapsed)}
+            />
           </div>
 
           {/* Media source selector */}

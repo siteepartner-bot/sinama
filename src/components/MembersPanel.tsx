@@ -3,7 +3,7 @@ import { Mic, MicOff, Video, VideoOff, Users, Monitor, Crown } from 'lucide-reac
 import { useRoom } from '../hooks/useRoom';
 
 export function MembersPanel() {
-  const { roomState, currentUser } = useRoom();
+  const { roomState, currentUser, peerMediaStates, isInCall } = useRoom();
 
   if (!roomState) return null;
 
@@ -27,6 +27,10 @@ export function MembersPanel() {
         {roomState.users.map((user) => {
           const isMe = currentUser?.userId === user.userId;
           const isHost = user.isHost || user.userId === roomState.hostId;
+          const peerState = peerMediaStates.get(user.userId);
+          const isMicOn = isMe ? (currentUser?.micEnabled && isInCall) : (peerState ? peerState.micEnabled : user.micEnabled);
+          const isCamOn = isMe ? (currentUser?.cameraEnabled && isInCall) : (peerState ? peerState.cameraEnabled : user.cameraEnabled);
+          const isCallJoined = isMe ? isInCall : !!(peerState?.callJoined || user.callJoined);
 
           return (
             <motion.div
@@ -81,7 +85,7 @@ export function MembersPanel() {
                       {user.isOnline ? '🟢 آنلاین' : '⚪ آفلاین'}
                     </span>
                     <span className="text-[10px] text-zinc-600">
-                      • {user.micEnabled ? '🎙️ Mic On' : '🔇 Mic Off'}
+                      • {isCallJoined ? (isMicOn ? '🎙️ Mic On' : '🔇 Mic Off') : 'بدون تماس'}
                     </span>
                   </div>
                 </div>
@@ -102,25 +106,25 @@ export function MembersPanel() {
                 {/* Mic status indicator */}
                 <div
                   className={`p-1.5 rounded-lg border ${
-                    user.micEnabled
+                    isMicOn
                       ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
                       : 'bg-zinc-900 border-zinc-800 text-zinc-600'
                   }`}
-                  title={user.micEnabled ? 'میکروفون فعال' : 'میکروفون غیرفعال'}
+                  title={isMicOn ? 'میکروفون فعال' : 'میکروفون غیرفعال'}
                 >
-                  {user.micEnabled ? <Mic className="h-3.5 w-3.5" /> : <MicOff className="h-3.5 w-3.5" />}
+                  {isMicOn ? <Mic className="h-3.5 w-3.5" /> : <MicOff className="h-3.5 w-3.5" />}
                 </div>
 
                 {/* Camera status indicator */}
                 <div
                   className={`p-1.5 rounded-lg border ${
-                    user.cameraEnabled
+                    isCamOn
                       ? 'bg-indigo-500/10 border-indigo-500/20 text-indigo-400'
                       : 'bg-zinc-900 border-zinc-800 text-zinc-600'
                   }`}
-                  title={user.cameraEnabled ? 'دوربین فعال' : 'دوربین غیرفعال'}
+                  title={isCamOn ? 'دوربین فعال' : 'دوربین غیرفعال'}
                 >
-                  {user.cameraEnabled ? <Video className="h-3.5 w-3.5" /> : <VideoOff className="h-3.5 w-3.5" />}
+                  {isCamOn ? <Video className="h-3.5 w-3.5" /> : <VideoOff className="h-3.5 w-3.5" />}
                 </div>
               </div>
             </motion.div>

@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Mic, MicOff, Video, VideoOff, MessageSquare, Users, PhoneOff } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, MessageSquare, Users, PhoneOff, PhoneCall } from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
 import { ScreenShareButton } from './ScreenShareButton';
 
@@ -16,20 +16,35 @@ export function CallControls({
   showMembers,
   onToggleMembers,
 }: CallControlsProps) {
-  const { currentUser, toggleMic, toggleCamera, toggleScreenShare, leaveRoom } = useRoom();
+  const {
+    currentUser,
+    isInCall,
+    joinCall,
+    leaveCall,
+    toggleMic,
+    toggleCamera,
+    toggleScreenShare,
+    leaveRoom
+  } = useRoom();
 
   if (!currentUser) return null;
 
-  const isMicActive = currentUser.micEnabled;
-  const isCameraActive = currentUser.cameraEnabled;
+  const isMicActive = currentUser.micEnabled && isInCall;
+  const isCameraActive = currentUser.cameraEnabled && isInCall;
   const isScreenSharing = !!currentUser.screenSharingEnabled;
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-4 p-4 bg-[#12141c] border border-zinc-800/80 rounded-2xl shadow-xl w-full" id="call-controls-container">
       {/* Current user badge (Left) */}
       <div className="flex items-center gap-2">
-        <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-        <span className="text-xs font-semibold text-zinc-300">اتاق فعال</span>
+        <div
+          className={`w-2.5 h-2.5 rounded-full ${
+            isInCall ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+          }`}
+        />
+        <span className="text-xs font-semibold text-zinc-300">
+          {isInCall ? 'تماس متصل' : 'حاضر در اتاق'}
+        </span>
         <span className="text-[11px] text-zinc-500">({currentUser.name})</span>
       </div>
 
@@ -67,6 +82,33 @@ export function CallControls({
           {isCameraActive ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
         </motion.button>
 
+        {/* Call Toggle (Join / Leave Call) */}
+        {isInCall ? (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={leaveCall}
+            className="px-3.5 py-2.5 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 text-amber-400 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+            title="قطع تماس صوتی و تصویری"
+            id="btn-disconnect-call"
+          >
+            <PhoneOff className="h-4 w-4" />
+            <span className="hidden sm:inline">قطع تماس</span>
+          </motion.button>
+        ) : (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => joinCall(true, false)}
+            className="px-3.5 py-2.5 bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25 text-emerald-400 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+            title="اتصال به تماس"
+            id="btn-connect-call"
+          >
+            <PhoneCall className="h-4 w-4" />
+            <span className="hidden sm:inline">پیوستن به تماس</span>
+          </motion.button>
+        )}
+
         {/* Screen Share Button */}
         <ScreenShareButton isSharing={isScreenSharing} onClick={toggleScreenShare} />
 
@@ -76,8 +118,8 @@ export function CallControls({
           whileTap={{ scale: 0.95 }}
           onClick={leaveRoom}
           className="p-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl border border-rose-500/30 flex items-center justify-center transition-all cursor-pointer shadow-lg shadow-rose-500/15"
-          title="خروج از اتاق"
-          id="btn-leave-call"
+          title="خروج کامل از اتاق"
+          id="btn-leave-room"
         >
           <PhoneOff className="h-5 w-5" />
         </motion.button>

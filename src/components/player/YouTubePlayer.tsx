@@ -45,7 +45,8 @@ export function YouTubePlayer({
   const containerId = useRef(`yt_player_${Math.random().toString(36).slice(2, 9)}`);
   const playerRef = useRef<any>(null);
   const isApiReadyRef = useRef<boolean>(false);
-  const suppressBroadcast = useRef<number>(0);
+  const isApplyingRemoteRef = useRef<boolean>(false);
+  const lastLocalActionTimeRef = useRef<number>(0);
   const lastHandledUpdatedAt = useRef<number>(updatedAt);
   const lastKnownTime = useRef<number>(currentTime);
 
@@ -98,7 +99,10 @@ export function YouTubePlayer({
                 event.target.setPlaybackRate(playbackRate);
               }
               if (isPlaying) {
-                suppressBroadcast.current++;
+                isApplyingRemoteRef.current = true;
+                setTimeout(() => {
+                  isApplyingRemoteRef.current = false;
+                }, 500);
                 event.target.playVideo();
               }
             },
@@ -112,41 +116,35 @@ export function YouTubePlayer({
                 const cur = player.getCurrentTime ? player.getCurrentTime() : currentTime;
                 lastKnownTime.current = cur;
 
-                if (suppressBroadcast.current > 0) {
-                  suppressBroadcast.current--;
+                if (isApplyingRemoteRef.current || realTimeClient.isRemoteEventActive) {
                   return;
                 }
 
-                if (!realTimeClient.isRemoteEventActive) {
-                  onPlayChange?.(true, cur);
-                }
+                lastLocalActionTimeRef.current = Date.now();
+                onPlayChange?.(true, cur);
               } else if (state === 2) {
                 const cur = player.getCurrentTime ? player.getCurrentTime() : currentTime;
                 lastKnownTime.current = cur;
 
-                if (suppressBroadcast.current > 0) {
-                  suppressBroadcast.current--;
+                if (isApplyingRemoteRef.current || realTimeClient.isRemoteEventActive) {
                   return;
                 }
 
-                if (!realTimeClient.isRemoteEventActive) {
-                  onPlayChange?.(false, cur);
-                }
+                lastLocalActionTimeRef.current = Date.now();
+                onPlayChange?.(false, cur);
               } else if (state === 0) {
-                if (!realTimeClient.isRemoteEventActive) {
+                if (!isApplyingRemoteRef.current && !realTimeClient.isRemoteEventActive) {
                   onEnded?.();
                 }
               }
             },
             onPlaybackRateChange: (event: any) => {
               if (!isMounted) return;
-              if (suppressBroadcast.current > 0) {
-                suppressBroadcast.current--;
+              if (isApplyingRemoteRef.current || realTimeClient.isRemoteEventActive) {
                 return;
               }
-              if (!realTimeClient.isRemoteEventActive) {
-                onRateChange?.(event.data);
-              }
+              lastLocalActionTimeRef.current = Date.now();
+              onRateChange?.(event.data);
             },
             onError: () => {
               if (!isMounted) return;
@@ -200,10 +198,16 @@ export function YouTubePlayer({
     try {
       const state = typeof player.getPlayerState === 'function' ? player.getPlayerState() : -1;
       if (isPlaying && state !== 1 && state !== 3) {
-        suppressBroadcast.current++;
+        isApplyingRemoteRef.current = true;
+        setTimeout(() => {
+          isApplyingRemoteRef.current = false;
+        }, 500);
         player.playVideo();
       } else if (!isPlaying && state === 1) {
-        suppressBroadcast.current++;
+        isApplyingRemoteRef.current = true;
+        setTimeout(() => {
+          isApplyingRemoteRef.current = false;
+        }, 500);
         player.pauseVideo();
       }
     } catch {
@@ -216,7 +220,7 @@ export function YouTubePlayer({
     const player = playerRef.current;
     if (!player || !isApiReadyRef.current) return;
 
-    const isNewEvent = updatedAt && updatedAt !== lastHandledUpdatedAt.current;
+    const isNewEvent = Boolean(updatedAt && updatedAt !== lastHandledUpdatedAt.current);
     if (isNewEvent) {
       lastHandledUpdatedAt.current = updatedAt;
     }
@@ -225,7 +229,10 @@ export function YouTubePlayer({
       try {
         const curr = typeof player.getCurrentTime === 'function' ? player.getCurrentTime() : 0;
         if (Math.abs(curr - currentTime) > 0.5) {
-          suppressBroadcast.current++;
+          isApplyingRemoteRef.current = true;
+          setTimeout(() => {
+            isApplyingRemoteRef.current = false;
+          }, 500);
           player.seekTo(currentTime, true);
           lastKnownTime.current = currentTime;
         }
@@ -241,7 +248,10 @@ export function YouTubePlayer({
     if (!player || !isApiReadyRef.current) return;
     try {
       if (typeof player.setPlaybackRate === 'function') {
-        suppressBroadcast.current++;
+        isApplyingRemoteRef.current = true;
+        setTimeout(() => {
+          isApplyingRemoteRef.current = false;
+        }, 500);
         player.setPlaybackRate(playbackRate);
       }
     } catch {

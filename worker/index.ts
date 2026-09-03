@@ -56,7 +56,13 @@ import {
   VideoEndedMessage,
   LocalFileSelectedMessage,
   ChatWsMessage,
-  RoomPermissionsChangedMessage
+  RoomPermissionsChangedMessage,
+  WebRTCJoinMessage,
+  WebRTCLeaveMessage,
+  WebRTCOfferMessage,
+  WebRTCAnswerMessage,
+  WebRTCIceCandidateMessage,
+  MediaStateChangedMessage
 } from '../src/types';
 
 export interface Env {
@@ -580,6 +586,120 @@ export class RoomDurableObject {
         this.broadcast(payload, senderWs);
         break;
       }
+
+      case 'WEBRTC_JOIN': {
+        console.log('[WEBRTC JOIN RECEIVED IN DO]', {
+          roomId: this.roomId,
+          senderId: message.senderId
+        });
+        if (this.room) {
+          const userIdx = this.room.users.findIndex((u) => u.userId === message.senderId);
+          if (userIdx >= 0) {
+            this.room.users[userIdx].callJoined = true;
+            await this.persistState();
+          }
+        }
+        const payload: WebRTCJoinMessage = {
+          type: 'WEBRTC_JOIN',
+          roomId: this.roomId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          timestamp: now
+        };
+        this.broadcast(payload, senderWs);
+        break;
+      }
+
+      case 'WEBRTC_LEAVE': {
+        console.log('[WEBRTC LEAVE RECEIVED IN DO]', {
+          roomId: this.roomId,
+          senderId: message.senderId
+        });
+        if (this.room) {
+          const userIdx = this.room.users.findIndex((u) => u.userId === message.senderId);
+          if (userIdx >= 0) {
+            this.room.users[userIdx].callJoined = false;
+            this.room.users[userIdx].micEnabled = false;
+            this.room.users[userIdx].cameraEnabled = false;
+            await this.persistState();
+          }
+        }
+        const payload: WebRTCLeaveMessage = {
+          type: 'WEBRTC_LEAVE',
+          roomId: this.roomId,
+          senderId: message.senderId,
+          timestamp: now
+        };
+        this.broadcast(payload, senderWs);
+        break;
+      }
+
+      case 'WEBRTC_OFFER': {
+        // Targeted Peer-to-Peer Signaling: Route offer specifically to destination user
+        const payload: WebRTCOfferMessage = {
+          type: 'WEBRTC_OFFER',
+          roomId: this.roomId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          toUserId: message.toUserId,
+          payload: message.payload,
+          timestamp: now
+        };
+        this.sendToUser(message.toUserId, payload);
+        break;
+      }
+
+      case 'WEBRTC_ANSWER': {
+        // Targeted Peer-to-Peer Signaling: Route answer specifically to destination user
+        const payload: WebRTCAnswerMessage = {
+          type: 'WEBRTC_ANSWER',
+          roomId: this.roomId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          toUserId: message.toUserId,
+          payload: message.payload,
+          timestamp: now
+        };
+        this.sendToUser(message.toUserId, payload);
+        break;
+      }
+
+      case 'WEBRTC_ICE_CANDIDATE': {
+        // Targeted Peer-to-Peer Signaling: Route candidate specifically to destination user
+        const payload: WebRTCIceCandidateMessage = {
+          type: 'WEBRTC_ICE_CANDIDATE',
+          roomId: this.roomId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          toUserId: message.toUserId,
+          payload: message.payload,
+          timestamp: now
+        };
+        this.sendToUser(message.toUserId, payload);
+        break;
+      }
+
+      case 'MEDIA_STATE_CHANGED': {
+        if (this.room) {
+          const userIdx = this.room.users.findIndex((u) => u.userId === message.senderId);
+          if (userIdx >= 0) {
+            this.room.users[userIdx].micEnabled = message.payload.micEnabled;
+            this.room.users[userIdx].cameraEnabled = message.payload.cameraEnabled;
+            this.room.users[userIdx].callJoined = message.payload.callJoined;
+            await this.persistState();
+          }
+        }
+        const payload: MediaStateChangedMessage = {
+          type: 'MEDIA_STATE_CHANGED',
+          roomId: this.roomId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          payload: message.payload,
+          timestamp: now
+        };
+        this.broadcast(payload, senderWs);
+        break;
+      }
     }
   }
 
@@ -634,6 +754,15 @@ export class RoomDurableObject {
       }
     } catch (err) {
       console.warn('Failed to send to single socket:', err);
+    }
+  }
+
+  private sendToUser(targetUserId: string, message: ServerMessage): void {
+    for (const [ws, session] of this.sessions.entries()) {
+      if (session.userId === targetUserId) {
+        this.sendToSocket(ws, message);
+        return;
+      }
     }
   }
 

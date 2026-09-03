@@ -8,6 +8,7 @@ export interface RoomUser {
   isOnline: boolean;
   micEnabled: boolean;
   cameraEnabled: boolean;
+  callJoined?: boolean;
   screenSharingEnabled?: boolean;
 }
 
@@ -100,13 +101,22 @@ export type VideoEventType =
   | 'VIDEO_ENDED'
   | 'LOCAL_FILE_SELECTED';
 
+export type WebRTCEventType =
+  | 'WEBRTC_JOIN'
+  | 'WEBRTC_LEAVE'
+  | 'WEBRTC_OFFER'
+  | 'WEBRTC_ANSWER'
+  | 'WEBRTC_ICE_CANDIDATE'
+  | 'MEDIA_STATE_CHANGED';
+
 export type ClientMessageType =
   | 'JOIN_ROOM'
   | 'LEAVE_ROOM'
   | 'PING'
   | 'CHAT_MESSAGE'
   | 'ROOM_PERMISSIONS_CHANGED'
-  | VideoEventType;
+  | VideoEventType
+  | WebRTCEventType;
 
 export type ServerMessageType =
   | 'ROOM_STATE_SYNC'
@@ -116,7 +126,8 @@ export type ServerMessageType =
   | 'CHAT_MESSAGE'
   | 'ROOM_PERMISSIONS_CHANGED'
   | 'ERROR'
-  | VideoEventType;
+  | VideoEventType
+  | WebRTCEventType;
 
 export interface BaseWsMessage {
   roomId: string;
@@ -132,6 +143,56 @@ export interface JoinRoomMessage extends BaseWsMessage {
 
 export interface LeaveRoomMessage extends BaseWsMessage {
   type: 'LEAVE_ROOM';
+}
+
+export interface WebRTCJoinMessage extends BaseWsMessage {
+  type: 'WEBRTC_JOIN';
+}
+
+export interface WebRTCLeaveMessage extends BaseWsMessage {
+  type: 'WEBRTC_LEAVE';
+}
+
+export interface WebRTCOfferMessage extends BaseWsMessage {
+  type: 'WEBRTC_OFFER';
+  toUserId: string;
+  payload: RTCSessionDescriptionInit;
+}
+
+export interface WebRTCAnswerMessage extends BaseWsMessage {
+  type: 'WEBRTC_ANSWER';
+  toUserId: string;
+  payload: RTCSessionDescriptionInit;
+}
+
+export interface WebRTCIceCandidateMessage extends BaseWsMessage {
+  type: 'WEBRTC_ICE_CANDIDATE';
+  toUserId: string;
+  payload: RTCIceCandidateInit;
+}
+
+export interface MediaStateChangedMessage extends BaseWsMessage {
+  type: 'MEDIA_STATE_CHANGED';
+  payload: {
+    micEnabled: boolean;
+    cameraEnabled: boolean;
+    callJoined: boolean;
+    updatedAt: number;
+  };
+}
+
+export type PeerConnectionState = 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed';
+
+export interface PeerMediaState {
+  userId: string;
+  name: string;
+  micEnabled: boolean;
+  cameraEnabled: boolean;
+  callJoined: boolean;
+  isHost?: boolean;
+  stream?: MediaStream;
+  connectionState?: PeerConnectionState;
+  updatedAt?: number;
 }
 
 export interface VideoPlayMessage extends BaseWsMessage {
@@ -195,6 +256,12 @@ export interface RoomPermissionsChangedMessage extends BaseWsMessage {
 export type ClientMessage =
   | JoinRoomMessage
   | LeaveRoomMessage
+  | WebRTCJoinMessage
+  | WebRTCLeaveMessage
+  | WebRTCOfferMessage
+  | WebRTCAnswerMessage
+  | WebRTCIceCandidateMessage
+  | MediaStateChangedMessage
   | VideoPlayMessage
   | VideoPauseMessage
   | VideoSeekMessage
@@ -243,6 +310,12 @@ export type ServerMessage =
   | RoomStateSyncMessage
   | UserJoinedMessage
   | UserLeftMessage
+  | WebRTCJoinMessage
+  | WebRTCLeaveMessage
+  | WebRTCOfferMessage
+  | WebRTCAnswerMessage
+  | WebRTCIceCandidateMessage
+  | MediaStateChangedMessage
   | VideoPlayMessage
   | VideoPauseMessage
   | VideoSeekMessage
