@@ -30,6 +30,7 @@ export interface IRoomService {
   subscribe(roomId: string, onUpdate: (room: Room, messages: ChatMessage[]) => void): () => void;
   onConnectionStatus(onStatus: (status: ConnectionStatus) => void): () => void;
   getConnectionStatus(): ConnectionStatus;
+  getCurrentRoomMembers(): RoomUser[];
   
   // Real-Time Video Event Broadcasters
   broadcastPlay(roomId: string, currentTime: number): void;
@@ -673,6 +674,13 @@ class DurableRoomService implements IRoomService {
       };
     }
     return room;
+  }
+
+  getCurrentRoomMembers(): RoomUser[] {
+    if (!this.currentActiveRoomId) return [];
+    const rooms = this.getRoomsMap();
+    const room = rooms[this.currentActiveRoomId];
+    return room ? room.users : [];
   }
 
   async getRoom(roomId: string): Promise<Room | null> {
