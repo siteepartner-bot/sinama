@@ -393,6 +393,73 @@ export class RealTimeClient {
     });
   }
 
+  public emitMovieStreamStarted(payload: { movieStreamId: string; fileName: string; duration?: number }): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[MOVIE STREAM STARTED SIGNAL SENT]', {
+      userId: this.currentUser.userId,
+      movieStreamId: payload.movieStreamId,
+      fileName: payload.fileName
+    });
+    this.sendMessage({
+      type: 'MOVIE_STREAM_STARTED',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      payload: {
+        ownerUserId: this.currentUser.userId,
+        movieStreamId: payload.movieStreamId,
+        fileName: payload.fileName,
+        duration: payload.duration,
+        timestamp: Date.now()
+      },
+      timestamp: Date.now()
+    });
+  }
+
+  public emitMovieStreamStopped(): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[MOVIE STREAM STOPPED SIGNAL SENT]', { userId: this.currentUser.userId });
+    this.sendMessage({
+      type: 'MOVIE_STREAM_STOPPED',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      payload: {
+        ownerUserId: this.currentUser.userId,
+        timestamp: Date.now()
+      },
+      timestamp: Date.now()
+    });
+  }
+
+  public emitMovieStreamControl(action: 'play' | 'pause' | 'stop', currentTime?: number): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[MOVIE] Control request sent', { action, currentTime, senderId: this.currentUser.userId });
+    this.sendMessage({
+      type: 'MOVIE_STREAM_CONTROL',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      action,
+      currentTime,
+      timestamp: Date.now()
+    });
+  }
+
+  public emitMovieStreamSeek(currentTime: number, isPlaying?: boolean): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[MOVIE] Seek request sent', { currentTime, isPlaying, senderId: this.currentUser.userId });
+    this.sendMessage({
+      type: 'MOVIE_STREAM_SEEK',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      currentTime,
+      isPlaying,
+      timestamp: Date.now()
+    });
+  }
+
   public getCurrentUser(): RoomUser | null {
     return this.currentUser;
   }

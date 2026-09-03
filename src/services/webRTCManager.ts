@@ -8,30 +8,42 @@ import {
   WebRTCIceCandidateMessage,
   MediaStateChangedMessage,
   WebRTCJoinMessage,
-  WebRTCLeaveMessage
+  WebRTCLeaveMessage,
+  MovieStreamStartedMessage,
+  MovieStreamStoppedMessage,
+  MovieStreamControlMessage,
+  MovieStreamSeekMessage
 } from '../types';
 import { realTimeClient } from './realtimeClient';
 
 export interface WebRTCManagerListeners {
   onLocalStreamChange?: (stream: MediaStream | null) => void;
   onLocalScreenStreamChange?: (stream: MediaStream | null) => void;
+  onLocalMovieStreamChange?: (stream: MediaStream | null) => void;
   onRemoteStreamsChange?: (remoteStreams: Map<string, MediaStream>) => void;
   onRemoteScreenStreamsChange?: (remoteScreenStreams: Map<string, MediaStream>) => void;
+  onRemoteMovieStreamChange?: (stream: MediaStream | null, ownerInfo?: { userId: string; fileName: string } | null) => void;
   onPeerStatesChange?: (peerStates: Map<string, PeerMediaState>) => void;
   onError?: (errorMessage: string) => void;
   onCallStateChange?: (isInCall: boolean) => void;
   onScreenSharingChange?: (isScreenSharing: boolean) => void;
+  onMovieStreamingChange?: (isMovieStreaming: boolean) => void;
 }
 
 /**
  * WebRTCManager - Modular Multi-User WebRTC Mesh Service.
  * Manages MediaStreams, RTCPeerConnections per peer, deterministic collision-free Perfect Negotiation,
- * ICE candidates queuing, graceful fallback, Screen Sharing, and clean lifecycle teardown.
+ * ICE candidates queuing, graceful fallback, Screen Sharing, Local Video File Live Streaming via captureStream(),
+ * and clean lifecycle teardown.
  */
 export class WebRTCManager {
   private localStream: MediaStream | null = null;
   private localScreenStream: MediaStream | null = null;
+  private localMovieStream: MediaStream | null = null;
+  private remoteMovieStream: MediaStream | null = null;
   private isScreenSharing = false;
+  private isMovieStreaming = false;
+  private movieStreamOwnerInfo: { userId: string; fileName: string } | null = null;
 
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
   private remoteStreams: Map<string, MediaStream> = new Map();
@@ -42,7 +54,11 @@ export class WebRTCManager {
   private isSettingRemoteAnswerPending: Map<string, boolean> = new Map();
   private remotePeerScreenStreamIds: Map<string, string> = new Map();
   private knownRemoteScreenStreams: Map<string, { userId: string; screenStreamId?: string; receivedAt: number }> = new Map();
+  private knownRemoteMovieStreams: Map<string, { ownerUserId: string; movieStreamId: string; fileName: string; duration?: number; receivedAt: number }> = new Map();
   private bufferedVideoTracks: Map<string, Array<{ track: MediaStreamTrack; stream: MediaStream; addedAt: number }>> = new Map();
+  private bufferedMovieTracks: Map<string, Array<{ track: MediaStreamTrack; stream: MediaStream; addedAt: number }>> = new Map();
+  private movieControlListeners: Set<(data: { action: 'play' | 'pause' | 'stop'; currentTime?: number; senderId: string }) => void> = new Set();
+  private movieSeekListeners: Set<(data: { currentTime: number; isPlaying?: boolean; senderId: string }) => void> = new Set();
   private negotiationPending: Map<string, boolean> = new Map();
 
   private isInCall = false;
@@ -85,11 +101,14 @@ export class WebRTCManager {
     // Initial emit
     listener.onLocalStreamChange?.(this.localStream);
     listener.onLocalScreenStreamChange?.(this.localScreenStream);
+    listener.onLocalMovieStreamChange?.(this.localMovieStream);
     listener.onRemoteStreamsChange?.(new Map(this.remoteStreams));
     listener.onRemoteScreenStreamsChange?.(new Map(this.remoteScreenStreams));
+    listener.onRemoteMovieStreamChange?.(this.remoteMovieStream, this.movieStreamOwnerInfo);
     listener.onPeerStatesChange?.(new Map(this.peerMediaStates));
     listener.onCallStateChange?.(this.isInCall);
     listener.onScreenSharingChange?.(this.isScreenSharing);
+    listener.onMovieStreamingChange?.(this.isMovieStreaming);
 
     return () => {
       this.listeners.delete(listener);
@@ -104,6 +123,10 @@ export class WebRTCManager {
     this.listeners.forEach((l) => l.onLocalScreenStreamChange?.(this.localScreenStream));
   }
 
+  private notifyLocalMovieStream(): void {
+    this.listeners.forEach((l) => l.onLocalMovieStreamChange?.(this.localMovieStream));
+  }
+
   private notifyRemoteStreams(): void {
     const copy = new Map(this.remoteStreams);
     this.listeners.forEach((l) => l.onRemoteStreamsChange?.(copy));
@@ -114,8 +137,16 @@ export class WebRTCManager {
     this.listeners.forEach((l) => l.onRemoteScreenStreamsChange?.(copy));
   }
 
+  private notifyRemoteMovieStream(): void {
+    this.listeners.forEach((l) => l.onRemoteMovieStreamChange?.(this.remoteMovieStream, this.movieStreamOwnerInfo));
+  }
+
   private notifyScreenSharing(): void {
     this.listeners.forEach((l) => l.onScreenSharingChange?.(this.isScreenSharing));
+  }
+
+  private notifyMovieStreaming(): void {
+    this.listeners.forEach((l) => l.onMovieStreamingChange?.(this.isMovieStreaming));
   }
 
   private notifyPeerStates(): void {
@@ -412,6 +443,139 @@ export class WebRTCManager {
         this.notifyPeerStates();
         break;
       }
+
+      case 'MOVIE_STREAM_STARTED': {
+        const movieMsg = message as MovieStreamStartedMessage;
+        const remoteUserId = movieMsg.senderId;
+        const payload = movieMsg.payload;
+        console.log('[MOVIE] Remote movie stream signal received', {
+          remoteUserId,
+          movieStreamId: payload?.movieStreamId,
+          fileName: payload?.fileName
+        });
+        if (remoteUserId === currentUser.userId) return;
+
+        // Save metadata unconditionally
+        this.knownRemoteMovieStreams.set(remoteUserId, {
+          ownerUserId: remoteUserId,
+          movieStreamId: payload?.movieStreamId,
+          fileName: payload?.fileName || 'ویدیوی محلی',
+          duration: payload?.duration,
+          receivedAt: Date.now()
+        });
+
+        this.movieStreamOwnerInfo = {
+          userId: remoteUserId,
+          fileName: payload?.fileName || 'ویدیوی محلی'
+        };
+
+        const peer = this.peerMediaStates.get(remoteUserId) || {
+          userId: remoteUserId,
+          name: movieMsg.senderName || 'کاربر',
+          micEnabled: true,
+          cameraEnabled: false,
+          callJoined: true,
+          updatedAt: Date.now()
+        };
+        peer.isMovieStreaming = true;
+
+        // 1. Check if movie tracks were buffered before this signal arrived
+        const buffered = this.bufferedMovieTracks.get(remoteUserId);
+        if (buffered && buffered.length > 0) {
+          console.log('[MOVIE] Flushing buffered tracks for movie stream:', buffered.length);
+          buffered.forEach((item) => {
+            this.routeTrackToMovie(remoteUserId, item.track, item.stream, payload?.fileName);
+          });
+          this.bufferedMovieTracks.delete(remoteUserId);
+        }
+
+        // 2. Check peer connection receivers for any unrouted movie tracks
+        const pc = this.peerConnections.get(remoteUserId);
+        if (pc) {
+          pc.getReceivers().forEach((receiver) => {
+            if (receiver.track && receiver.track.readyState === 'live') {
+              const currentMovieStream = this.remoteMovieStream;
+              const alreadyInMovie = currentMovieStream && currentMovieStream.getTracks().some((t) => t.id === receiver.track.id);
+              if (!alreadyInMovie) {
+                const isKnownCamera = this.remoteStreams.get(remoteUserId)?.getVideoTracks().some((t) => t.id === receiver.track.id);
+                const isKnownMic = this.remoteStreams.get(remoteUserId)?.getAudioTracks().some((t) => t.id === receiver.track.id);
+                if (!isKnownCamera && !isKnownMic) {
+                  console.log('[MOVIE] Found unrouted receiver track, routing to movie stream:', receiver.track.id, receiver.track.kind);
+                  this.routeTrackToMovie(remoteUserId, receiver.track, new MediaStream([receiver.track]), payload?.fileName);
+                }
+              }
+            }
+          });
+        }
+
+        this.peerMediaStates.set(remoteUserId, peer);
+        this.notifyRemoteMovieStream();
+        this.notifyPeerStates();
+        break;
+      }
+
+      case 'MOVIE_STREAM_STOPPED': {
+        const remoteUserId = message.senderId;
+        console.log('[MOVIE] Remote movie stream stopped signal received', { remoteUserId });
+        if (remoteUserId === currentUser.userId) return;
+
+        this.knownRemoteMovieStreams.delete(remoteUserId);
+        this.bufferedMovieTracks.delete(remoteUserId);
+
+        if (this.remoteMovieStream) {
+          this.remoteMovieStream.getTracks().forEach((t) => {
+            try {
+              t.stop();
+            } catch {}
+          });
+          this.remoteMovieStream = null;
+        }
+        this.movieStreamOwnerInfo = null;
+
+        const peer = this.peerMediaStates.get(remoteUserId);
+        if (peer) {
+          peer.isMovieStreaming = false;
+          peer.movieStream = undefined;
+        }
+
+        this.notifyRemoteMovieStream();
+        this.notifyPeerStates();
+        break;
+      }
+
+      case 'MOVIE_STREAM_CONTROL': {
+        const ctrlMsg = message as MovieStreamControlMessage;
+        console.log('[MOVIE] Control request received', {
+          action: ctrlMsg.action,
+          currentTime: ctrlMsg.currentTime,
+          senderId: ctrlMsg.senderId
+        });
+        this.movieControlListeners.forEach((listener) => {
+          listener({
+            action: ctrlMsg.action,
+            currentTime: ctrlMsg.currentTime,
+            senderId: ctrlMsg.senderId
+          });
+        });
+        break;
+      }
+
+      case 'MOVIE_STREAM_SEEK': {
+        const seekMsg = message as MovieStreamSeekMessage;
+        console.log('[MOVIE] Seek request received', {
+          currentTime: seekMsg.currentTime,
+          isPlaying: seekMsg.isPlaying,
+          senderId: seekMsg.senderId
+        });
+        this.movieSeekListeners.forEach((listener) => {
+          listener({
+            currentTime: seekMsg.currentTime,
+            isPlaying: seekMsg.isPlaying,
+            senderId: seekMsg.senderId
+          });
+        });
+        break;
+      }
     }
   }
 
@@ -483,14 +647,38 @@ export class WebRTCManager {
       });
     }
 
-    // 1c. Ensure Transceiver capability for receiving Video (both camera and screen share)
-    // independent of local media, so remote peer video/screen tracks can be received immediately
+    // 1c. Send Local Movie Live Stream Tracks to Peer if active (Late-Join Support)
+    if (this.localMovieStream && this.isMovieStreaming) {
+      this.localMovieStream.getTracks().forEach((track) => {
+        try {
+          pc!.addTrack(track, this.localMovieStream!);
+          console.log('[MOVIE] Track added to peer (late join):', remoteUserId, {
+            kind: track.kind,
+            trackId: track.id,
+            readyState: track.readyState
+          });
+        } catch (err) {
+          console.warn('[MOVIE] Failed to add movie track to late-joining peer:', remoteUserId, err);
+        }
+      });
+    }
+
+    // 1d. Ensure Transceivers for receiving Video & Audio
+    // independent of local media, so remote peer video/movie tracks can be received immediately
     const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === 'video');
     if (videoTransceivers.length === 0) {
       try {
         pc.addTransceiver('video', { direction: 'recvonly' });
       } catch (err) {
         console.warn('[WEBRTC] Add initial video recvonly transceiver error:', err);
+      }
+    }
+    const audioTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === 'audio');
+    if (audioTransceivers.length === 0) {
+      try {
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+      } catch (err) {
+        console.warn('[WEBRTC] Add initial audio recvonly transceiver error:', err);
       }
     }
 
@@ -522,9 +710,24 @@ export class WebRTCManager {
       const cameraStream = this.remoteStreams.get(remoteUserId);
       const peerState = this.peerMediaStates.get(remoteUserId);
       const screenMeta = this.knownRemoteScreenStreams.get(remoteUserId);
+      const movieMeta = this.knownRemoteMovieStreams.get(remoteUserId);
 
       // Handle AUDIO track
       if (event.track.kind === 'audio') {
+        // 1. Movie Stream Audio Detection
+        if (
+          (movieMeta?.movieStreamId && incomingStream.id === movieMeta.movieStreamId) ||
+          peerState?.isMovieStreaming ||
+          event.track.label.toLowerCase().includes('movie') ||
+          event.track.label.toLowerCase().includes('capture')
+        ) {
+          console.log('[MOVIE] Remote movie audio track received', { remoteUserId, trackId: event.track.id, streamId: incomingStream.id });
+          this.routeTrackToMovie(remoteUserId, event.track, incomingStream, movieMeta?.fileName);
+          this.notifyRemoteMovieStream();
+          return;
+        }
+
+        // 2. Screen Share Audio Detection
         if (screenMeta?.screenStreamId && incomingStream.id === screenMeta.screenStreamId) {
           console.log('[REMOTE SCREEN] Audio track matched screen share stream:', incomingStream.id);
           this.routeTrackToScreen(remoteUserId, event.track, incomingStream);
@@ -532,6 +735,7 @@ export class WebRTCManager {
           return;
         }
 
+        // 3. Standard Camera / Mic Audio
         let remoteStream = cameraStream;
         if (!remoteStream) {
           remoteStream = incomingStream;
@@ -551,21 +755,49 @@ export class WebRTCManager {
 
       // Handle VIDEO track
       if (event.track.kind === 'video') {
-        console.log('[REMOTE SCREEN] Track received', {
+        console.log('[REMOTE VIDEO TRACK RECEIVED]', {
           remoteUserId,
           trackId: event.track.id,
           streamId: incomingStream.id,
           label: event.track.label
         });
 
-        // Determine if this video track is a screen share track
+        // 1. Determine if this video track is a MOVIE stream track
+        let isMovieStream = false;
+        if (movieMeta?.movieStreamId && incomingStream.id === movieMeta.movieStreamId) {
+          isMovieStream = true;
+        } else if (peerState?.isMovieStreaming) {
+          if (!peerState.cameraEnabled || !cameraStream || incomingStream.id !== cameraStream.id) {
+            isMovieStream = true;
+          }
+        } else if (
+          event.track.label.toLowerCase().includes('movie') ||
+          incomingStream.id.toLowerCase().includes('movie') ||
+          event.track.label.toLowerCase().includes('capture')
+        ) {
+          isMovieStream = true;
+        }
+
+        if (isMovieStream) {
+          console.log('[MOVIE] Matching movie stream metadata', { remoteUserId, trackId: event.track.id });
+          this.routeTrackToMovie(remoteUserId, event.track, incomingStream, movieMeta?.fileName);
+          console.log('[MOVIE] Remote movie stream attached', {
+            remoteUserId,
+            streamId: incomingStream.id
+          });
+          this.notifyRemoteMovieStream();
+          this.notifyPeerStates();
+          return;
+        }
+
+        // 2. Determine if this video track is a screen share track
         let isScreenShare = false;
 
-        // 1. Matches known screen stream ID from signaling metadata
+        // Matches known screen stream ID from signaling metadata
         if (screenMeta?.screenStreamId && incomingStream.id === screenMeta.screenStreamId) {
           isScreenShare = true;
         }
-        // 2. Peer is already flagged as screen sharing
+        // Peer is already flagged as screen sharing
         else if (peerState?.screenSharing) {
           if (!peerState.cameraEnabled || !cameraStream || incomingStream.id !== cameraStream.id) {
             isScreenShare = true;
@@ -573,7 +805,7 @@ export class WebRTCManager {
             isScreenShare = true;
           }
         }
-        // 3. Track or stream label explicitly indicates screen share
+        // Track or stream label explicitly indicates screen share
         else if (
           event.track.label.toLowerCase().includes('screen') ||
           incomingStream.id.toLowerCase().includes('screen')
@@ -595,7 +827,7 @@ export class WebRTCManager {
         }
 
         // If metadata has not arrived yet: BUFFER the video track!
-        console.log('[REMOTE SCREEN] Track arrived before metadata, buffering', {
+        console.log('[REMOTE TRACK] Track arrived before metadata, buffering', {
           remoteUserId,
           trackId: event.track.id,
           streamId: incomingStream.id
@@ -603,6 +835,10 @@ export class WebRTCManager {
         const buffer = this.bufferedVideoTracks.get(remoteUserId) || [];
         buffer.push({ track: event.track, stream: incomingStream, addedAt: Date.now() });
         this.bufferedVideoTracks.set(remoteUserId, buffer);
+
+        const movieBuf = this.bufferedMovieTracks.get(remoteUserId) || [];
+        movieBuf.push({ track: event.track, stream: incomingStream, addedAt: Date.now() });
+        this.bufferedMovieTracks.set(remoteUserId, movieBuf);
 
         // Tentatively attach to cameraStream ONLY if camera is explicitly enabled by peer
         if (peerState?.cameraEnabled) {
@@ -624,8 +860,17 @@ export class WebRTCManager {
         } else {
           // If peer camera is NOT enabled, check again after short delay in case signal was slightly delayed
           setTimeout(() => {
-            const currentMeta = this.knownRemoteScreenStreams.get(remoteUserId);
+            const currentMovieMeta = this.knownRemoteMovieStreams.get(remoteUserId);
             const currentPeer = this.peerMediaStates.get(remoteUserId);
+            if (currentMovieMeta || currentPeer?.isMovieStreaming) {
+              console.log('[MOVIE] Delayed check matched movie stream:', { remoteUserId, trackId: event.track.id });
+              this.routeTrackToMovie(remoteUserId, event.track, incomingStream, currentMovieMeta?.fileName);
+              this.notifyRemoteMovieStream();
+              this.notifyPeerStates();
+              return;
+            }
+
+            const currentMeta = this.knownRemoteScreenStreams.get(remoteUserId);
             if (currentMeta || currentPeer?.screenSharing) {
               const currentBuf = this.bufferedVideoTracks.get(remoteUserId);
               if (currentBuf && currentBuf.some((b) => b.track.id === event.track.id)) {
@@ -634,10 +879,6 @@ export class WebRTCManager {
                   trackId: event.track.id
                 });
                 this.routeTrackToScreen(remoteUserId, event.track, incomingStream);
-                console.log('[REMOTE SCREEN] Stream routed to ScreenSharePanel', {
-                  remoteUserId,
-                  streamId: incomingStream.id
-                });
                 this.notifyRemoteScreenStreams();
                 this.notifyPeerStates();
                 console.log('[REMOTE SCREEN] React state updated');
@@ -1371,6 +1612,249 @@ export class WebRTCManager {
     }
   }
 
+  // --- Movie Live Stream Engine (Phase 7: captureStream) ---
+
+  /**
+   * Captures the MediaStream from an HTMLVideoElement and broadcasts it to all peers via WebRTC Mesh.
+   */
+  public async startMovieStream(
+    videoElement: HTMLVideoElement,
+    fileName: string,
+    duration?: number
+  ): Promise<{ stream: MediaStream | null; success: boolean; error?: string }> {
+    try {
+      if (!videoElement) {
+        return { stream: null, success: false, error: 'المان ویدیو پیدا نشد.' };
+      }
+
+      const captureFunc = (videoElement as any).captureStream || (videoElement as any).mozCaptureStream;
+      if (!captureFunc || typeof captureFunc !== 'function') {
+        const err = 'مرورگر شما از ویژگی اشتراک ویدیوی محلی (captureStream) پشتیبانی نمی‌کند.';
+        this.notifyError(err);
+        return { stream: null, success: false, error: err };
+      }
+
+      // If existing movie stream is active, stop it first
+      if (this.isMovieStreaming) {
+        await this.stopMovieStream();
+      }
+
+      console.log('[MOVIE] Capturing stream from video element...', { fileName, duration });
+      const stream: MediaStream = captureFunc.call(videoElement);
+      console.log('[MOVIE] Capture stream created', {
+        streamId: stream.id,
+        videoTracks: stream.getVideoTracks().length,
+        audioTracks: stream.getAudioTracks().length
+      });
+
+      this.localMovieStream = stream;
+      this.isMovieStreaming = true;
+      const currentUser = realTimeClient.getCurrentUser();
+      this.movieStreamOwnerInfo = {
+        userId: currentUser?.userId || '',
+        fileName
+      };
+
+      // Broadcast tracks to all existing peer connections
+      const tracks = stream.getTracks();
+      for (const [peerId, pc] of this.peerConnections) {
+        tracks.forEach((track) => {
+          try {
+            pc.addTrack(track, stream);
+            console.log('[MOVIE] Track added to peer:', peerId, {
+              kind: track.kind,
+              trackId: track.id,
+              readyState: track.readyState
+            });
+          } catch (err) {
+            console.warn('[MOVIE] Failed to add movie track to peer:', peerId, err);
+          }
+        });
+        await this.requestNegotiation(peerId);
+      }
+
+      // Handle track endings
+      tracks.forEach((track) => {
+        track.onended = () => {
+          console.log('[MOVIE] Local movie track ended:', track.kind, track.id);
+        };
+      });
+
+      // Emit MOVIE_STREAM_STARTED signaling message
+      realTimeClient.emitMovieStreamStarted({
+        movieStreamId: stream.id,
+        fileName,
+        duration
+      });
+
+      this.notifyLocalMovieStream();
+      this.notifyMovieStreaming();
+      return { stream, success: true };
+    } catch (err: unknown) {
+      const msg = 'خطا در ایجاد استریم ویدیو از فایل سیستم.';
+      console.error('[MOVIE ERROR]', err);
+      this.notifyError(msg);
+      return { stream: null, success: false, error: msg };
+    }
+  }
+
+  /**
+   * Stops the active local movie stream, removes senders, and signals other peers.
+   */
+  public async stopMovieStream(): Promise<void> {
+    if (!this.isMovieStreaming && !this.localMovieStream) return;
+
+    console.log('[MOVIE] Stream stopped');
+    if (this.localMovieStream) {
+      const tracks = this.localMovieStream.getTracks();
+      this.peerConnections.forEach((pc, peerId) => {
+        const senders = pc.getSenders();
+        senders.forEach((sender) => {
+          if (sender.track && tracks.some((t) => t.id === sender.track!.id)) {
+            try {
+              pc.removeTrack(sender);
+              console.log('[MOVIE] Track removed from peer sender:', peerId, sender.track.id);
+            } catch (err) {
+              console.warn('[MOVIE] Error removing movie sender track:', err);
+            }
+          }
+        });
+        this.requestNegotiation(peerId);
+      });
+
+      tracks.forEach((t) => {
+        try {
+          t.stop();
+        } catch {}
+      });
+      this.localMovieStream = null;
+    }
+
+    this.isMovieStreaming = false;
+    this.movieStreamOwnerInfo = null;
+
+    realTimeClient.emitMovieStreamStopped();
+    this.notifyLocalMovieStream();
+    this.notifyMovieStreaming();
+  }
+
+  /**
+   * Routes an incoming movie video or audio track to the remoteMovieStream.
+   */
+  private routeTrackToMovie(
+    remoteUserId: string,
+    track: MediaStreamTrack,
+    incomingStream: MediaStream,
+    fileName?: string
+  ): void {
+    if (!this.remoteMovieStream) {
+      this.remoteMovieStream = new MediaStream([track]);
+      console.log('[MOVIE] Created new remote movie stream with track:', track.kind, track.id);
+    } else {
+      if (!this.remoteMovieStream.getTracks().some((t) => t.id === track.id)) {
+        this.remoteMovieStream.addTrack(track);
+        console.log('[MOVIE] Added track to existing remote movie stream:', track.kind, track.id);
+      }
+    }
+
+    this.movieStreamOwnerInfo = {
+      userId: remoteUserId,
+      fileName: fileName || this.knownRemoteMovieStreams.get(remoteUserId)?.fileName || 'ویدیوی محلی'
+    };
+
+    track.onended = () => {
+      this.handleRemoteMovieTrackEnded(remoteUserId, track.id);
+    };
+
+    const peer = this.peerMediaStates.get(remoteUserId) || {
+      userId: remoteUserId,
+      name: 'هم‌اتاقی',
+      micEnabled: true,
+      cameraEnabled: false,
+      callJoined: true,
+      updatedAt: Date.now()
+    };
+    peer.isMovieStreaming = true;
+    peer.movieStream = this.remoteMovieStream;
+    this.peerMediaStates.set(remoteUserId, peer);
+  }
+
+  /**
+   * Handles remote movie track ending
+   */
+  private handleRemoteMovieTrackEnded(remoteUserId: string, trackId: string): void {
+    console.log('[MOVIE] Remote movie track ended:', { remoteUserId, trackId });
+    if (this.remoteMovieStream) {
+      const remainingTracks = this.remoteMovieStream.getTracks().filter((t) => t.id !== trackId);
+      if (remainingTracks.length === 0) {
+        this.remoteMovieStream = null;
+        this.movieStreamOwnerInfo = null;
+        this.knownRemoteMovieStreams.delete(remoteUserId);
+        const peer = this.peerMediaStates.get(remoteUserId);
+        if (peer) {
+          peer.isMovieStreaming = false;
+          peer.movieStream = undefined;
+        }
+        this.notifyRemoteMovieStream();
+        this.notifyPeerStates();
+      }
+    }
+  }
+
+  /**
+   * Adjusts maximum bitrate for video stream adaptation.
+   */
+  public async setMovieVideoMaxBitrate(maxBitrateBps: number | null): Promise<void> {
+    if (!this.localMovieStream) return;
+    const videoTrack = this.localMovieStream.getVideoTracks()[0];
+    if (!videoTrack) return;
+
+    for (const [peerId, pc] of this.peerConnections) {
+      const sender = pc.getSenders().find((s) => s.track && s.track.id === videoTrack.id);
+      if (sender && sender.getParameters) {
+        try {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          if (maxBitrateBps !== null) {
+            params.encodings[0].maxBitrate = maxBitrateBps;
+          } else {
+            delete params.encodings[0].maxBitrate;
+          }
+          await sender.setParameters(params);
+          console.log('[MOVIE] Max bitrate adjusted for peer:', peerId, maxBitrateBps);
+        } catch (err) {
+          console.warn('[MOVIE] Failed to set max bitrate on peer sender:', peerId, err);
+        }
+      }
+    }
+  }
+
+  /**
+   * Subscribes to Movie Stream Control requests from other peers (Play/Pause/Stop).
+   */
+  public onMovieControlRequest(
+    listener: (data: { action: 'play' | 'pause' | 'stop'; currentTime?: number; senderId: string }) => void
+  ): () => void {
+    this.movieControlListeners.add(listener);
+    return () => {
+      this.movieControlListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Subscribes to Movie Stream Seek requests from other peers.
+   */
+  public onMovieSeekRequest(
+    listener: (data: { currentTime: number; isPlaying?: boolean; senderId: string }) => void
+  ): () => void {
+    this.movieSeekListeners.add(listener);
+    return () => {
+      this.movieSeekListeners.delete(listener);
+    };
+  }
+
   /**
    * Closes a single peer connection and cleans up its remote stream & screen stream.
    */
@@ -1399,7 +1883,9 @@ export class WebRTCManager {
     }
 
     this.knownRemoteScreenStreams.delete(remoteUserId);
+    this.knownRemoteMovieStreams.delete(remoteUserId);
     this.bufferedVideoTracks.delete(remoteUserId);
+    this.bufferedMovieTracks.delete(remoteUserId);
     this.iceCandidatesQueue.delete(remoteUserId);
     this.makingOffer.delete(remoteUserId);
     this.isSettingRemoteAnswerPending.delete(remoteUserId);
@@ -1409,15 +1895,19 @@ export class WebRTCManager {
 
     this.notifyRemoteStreams();
     this.notifyRemoteScreenStreams();
+    this.notifyRemoteMovieStream();
     this.notifyPeerStates();
   }
 
   /**
-   * Leaves the WebRTC Call session and stops local camera & screen tracks.
+   * Leaves the WebRTC Call session and stops local camera, screen & movie tracks.
    */
   public leaveCall(): void {
     if (this.isScreenSharing) {
       this.stopScreenShare();
+    }
+    if (this.isMovieStreaming) {
+      this.stopMovieStream();
     }
 
     if (!this.isInCall && !this.localStream) return;
@@ -1468,8 +1958,19 @@ export class WebRTCManager {
     });
     this.remoteScreenStreams.clear();
 
+    if (this.remoteMovieStream) {
+      this.remoteMovieStream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {}
+      });
+      this.remoteMovieStream = null;
+    }
+
     this.knownRemoteScreenStreams.clear();
+    this.knownRemoteMovieStreams.clear();
     this.bufferedVideoTracks.clear();
+    this.bufferedMovieTracks.clear();
     this.iceCandidatesQueue.clear();
     this.makingOffer.clear();
     this.isSettingRemoteAnswerPending.clear();
@@ -1479,8 +1980,10 @@ export class WebRTCManager {
 
     this.notifyLocalStream();
     this.notifyLocalScreenStream();
+    this.notifyLocalMovieStream();
     this.notifyRemoteStreams();
     this.notifyRemoteScreenStreams();
+    this.notifyRemoteMovieStream();
     this.notifyPeerStates();
     this.notifyCallState();
   }
@@ -1504,6 +2007,22 @@ export class WebRTCManager {
 
   public getLocalScreenStream(): MediaStream | null {
     return this.localScreenStream;
+  }
+
+  public getLocalMovieStream(): MediaStream | null {
+    return this.localMovieStream;
+  }
+
+  public getRemoteMovieStream(): MediaStream | null {
+    return this.remoteMovieStream;
+  }
+
+  public getMovieStreamOwnerInfo(): { userId: string; fileName: string } | null {
+    return this.movieStreamOwnerInfo;
+  }
+
+  public getIsMovieStreaming(): boolean {
+    return this.isMovieStreaming;
   }
 
   public getRemoteStreams(): Map<string, MediaStream> {

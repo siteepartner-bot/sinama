@@ -6,8 +6,9 @@ import { YouTubePlayer } from './YouTubePlayer';
 import { AparatPlayer } from './AparatPlayer';
 import { DirectVideoPlayer } from './DirectVideoPlayer';
 import { LocalVideoPlayer } from './LocalVideoPlayer';
-import { LocalVideoNotice } from './LocalVideoNotice';
+import { RemoteMoviePlayer } from './RemoteMoviePlayer';
 import { parseYouTubeUrl, parseAparatUrl } from '../../utils/mediaParsers';
+import { useRoom } from '../../hooks/useRoom';
 
 interface VideoPlayerCoreProps {
   mediaState?: MediaState | null;
@@ -38,6 +39,7 @@ export function VideoPlayerCore({
   onOpenSourcePanel,
   onClearSource
 }: VideoPlayerCoreProps) {
+  const { remoteMovieStream, movieStreamOwnerInfo } = useRoom();
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
@@ -192,13 +194,14 @@ export function VideoPlayerCore({
         />
       )}
 
-      {/* 5. Local Video Notice for other room members */}
+      {/* 5. Remote Movie Player for other room members (WebRTC Live Stream) */}
       {mediaState.sourceType === 'local' && !isLocalFileOwner && (
-        <LocalVideoNotice
+        <RemoteMoviePlayer
+          key={`remote_movie_${mediaState.fileName || movieStreamOwnerInfo?.fileName || 'stream'}`}
+          stream={remoteMovieStream}
+          fileName={mediaState.fileName || mediaState.title || movieStreamOwnerInfo?.fileName || 'فایل ویدیوی محلی'}
           ownerName={mediaState.localFileOwner?.userName || mediaState.updatedByName || 'یکی از اعضای اتاق'}
-          fileName={mediaState.fileName || mediaState.title || 'فایل محلی'}
-          isCurrentUserOwner={false}
-          onSelectOwnSource={onOpenSourcePanel}
+          onOpenSourcePanel={onOpenSourcePanel}
         />
       )}
     </div>

@@ -1,7 +1,6 @@
 import { motion } from 'motion/react';
 import { Mic, MicOff, Video, VideoOff, MessageSquare, Users, PhoneOff, PhoneCall } from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
-import { ScreenShareButton } from './ScreenShareButton';
 
 interface CallControlsProps {
   showChat: boolean;
@@ -109,9 +108,6 @@ export function CallControls({
             <span className="hidden sm:inline">پیوستن به تماس</span>
           </motion.button>
         )}
-
-        {/* Screen Share Button */}
-        <ScreenShareButton isSharing={isScreenSharing} onClick={toggleScreenShare} />
 
         {/* Leave Room (Red Button) */}
         <motion.button

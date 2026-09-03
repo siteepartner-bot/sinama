@@ -31,16 +31,24 @@ interface RoomContextType {
   leaveRoom: () => Promise<void>;
   localStream: MediaStream | null;
   localScreenStream: MediaStream | null;
+  localMovieStream: MediaStream | null;
   remoteStreams: Map<string, MediaStream>;
   remoteScreenStreams: Map<string, MediaStream>;
+  remoteMovieStream: MediaStream | null;
+  movieStreamOwnerInfo: { userId: string; fileName: string } | null;
   peerMediaStates: Map<string, PeerMediaState>;
   isInCall: boolean;
   isScreenSharing: boolean;
+  isMovieStreaming: boolean;
   joinCall: (initialMic?: boolean, initialCamera?: boolean) => Promise<boolean>;
   leaveCall: () => void;
   toggleMic: () => Promise<void>;
   toggleCamera: () => Promise<void>;
   toggleScreenShare: () => Promise<void>;
+  startMovieStream: (videoElement: HTMLVideoElement, fileName: string, duration?: number) => Promise<{ success: boolean; error?: string }>;
+  stopMovieStream: () => Promise<void>;
+  sendMovieControl: (action: 'play' | 'pause' | 'stop', currentTime?: number) => void;
+  sendMovieSeek: (currentTime: number, isPlaying?: boolean) => void;
   sendChatMessage: (text: string) => Promise<void>;
   changeVideoSource: (sourceType: 'youtube' | 'aparat' | 'direct' | 'local', url: string, title?: string) => Promise<void>;
   clearVideoSource: () => Promise<void>;
@@ -70,11 +78,15 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
   // WebRTC Media States
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
+  const [localMovieStream, setLocalMovieStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [remoteScreenStreams, setRemoteScreenStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [remoteMovieStream, setRemoteMovieStream] = useState<MediaStream | null>(null);
+  const [movieStreamOwnerInfo, setMovieStreamOwnerInfo] = useState<{ userId: string; fileName: string } | null>(null);
   const [peerMediaStates, setPeerMediaStates] = useState<Map<string, PeerMediaState>>(new Map());
   const [isInCall, setIsInCall] = useState<boolean>(false);
   const [isScreenSharing, setIsScreenSharing] = useState<boolean>(false);
+  const [isMovieStreaming, setIsMovieStreaming] = useState<boolean>(false);
 
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const statusUnsubRef = useRef<(() => void) | null>(null);
@@ -96,11 +108,17 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     const unsub = webRTCManager.subscribe({
       onLocalStreamChange: (stream) => setLocalStream(stream),
       onLocalScreenStreamChange: (stream) => setLocalScreenStream(stream),
+      onLocalMovieStreamChange: (stream) => setLocalMovieStream(stream),
       onRemoteStreamsChange: (streams) => setRemoteStreams(streams),
       onRemoteScreenStreamsChange: (streams) => setRemoteScreenStreams(streams),
+      onRemoteMovieStreamChange: (stream, ownerInfo) => {
+        setRemoteMovieStream(stream);
+        setMovieStreamOwnerInfo(ownerInfo || null);
+      },
       onPeerStatesChange: (states) => setPeerMediaStates(states),
       onCallStateChange: (inCall) => setIsInCall(inCall),
       onScreenSharingChange: (sharing) => setIsScreenSharing(sharing),
+      onMovieStreamingChange: (streaming) => setIsMovieStreaming(streaming),
       onError: (errMsg) => setError(errMsg)
     });
     return () => unsub();
@@ -352,6 +370,24 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     setCurrentUser((prev) => (prev ? { ...prev, screenSharingEnabled: isSharing } : null));
   };
 
+  // Movie Live Streaming (Phase 7)
+  const startMovieStream = async (videoElement: HTMLVideoElement, fileName: string, duration?: number) => {
+    const res = await webRTCManager.startMovieStream(videoElement, fileName, duration);
+    return { success: res.success, error: res.error };
+  };
+
+  const stopMovieStream = async () => {
+    await webRTCManager.stopMovieStream();
+  };
+
+  const sendMovieControl = (action: 'play' | 'pause' | 'stop', currentTime?: number) => {
+    roomService.sendMovieControl(action, currentTime);
+  };
+
+  const sendMovieSeek = (currentTime: number, isPlaying?: boolean) => {
+    roomService.sendMovieSeek(currentTime, isPlaying);
+  };
+
   // Send chat message
   const sendChatMessage = async (text: string) => {
     if (!currentRoom || !currentUser) return;
@@ -549,16 +585,24 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
         leaveRoom,
         localStream,
         localScreenStream,
+        localMovieStream,
         remoteStreams,
         remoteScreenStreams,
+        remoteMovieStream,
+        movieStreamOwnerInfo,
         peerMediaStates,
         isInCall,
         isScreenSharing,
+        isMovieStreaming,
         joinCall,
         leaveCall,
         toggleMic,
         toggleCamera,
         toggleScreenShare,
+        startMovieStream,
+        stopMovieStream,
+        sendMovieControl,
+        sendMovieSeek,
         sendChatMessage,
         changeVideoSource,
         clearVideoSource,

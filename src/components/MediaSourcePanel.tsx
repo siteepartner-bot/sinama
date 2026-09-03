@@ -398,7 +398,7 @@ export function MediaSourcePanel() {
             <p className="text-[11px] text-zinc-500 mt-1.5 text-center leading-relaxed max-w-sm">
               پشتیبانی کامل از فرمت‌های <span className="text-rose-400 font-semibold">MKV</span>، MP4، WebM، MOV و AVI بدون محدودیت حجم فایل
               <br />
-              <span className="text-zinc-400 font-medium">(پخش کاملاً روان درون مرورگر بدون آپلود روی سرور جهت حفظ حریم خصوصی)</span>
+              <span className="text-zinc-400 font-medium">(استریم زنده مستقیم P2P Mesh به تمام اعضای اتاق بدون آپلود به سرور)</span>
             </p>
           </div>
         )}

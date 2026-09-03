@@ -109,7 +109,11 @@ export type WebRTCEventType =
   | 'WEBRTC_ICE_CANDIDATE'
   | 'MEDIA_STATE_CHANGED'
   | 'SCREEN_SHARE_STARTED'
-  | 'SCREEN_SHARE_STOPPED';
+  | 'SCREEN_SHARE_STOPPED'
+  | 'MOVIE_STREAM_STARTED'
+  | 'MOVIE_STREAM_STOPPED'
+  | 'MOVIE_STREAM_CONTROL'
+  | 'MOVIE_STREAM_SEEK';
 
 export type ClientMessageType =
   | 'JOIN_ROOM'
@@ -199,6 +203,37 @@ export interface ScreenShareStoppedMessage extends BaseWsMessage {
   };
 }
 
+export interface MovieStreamStartedMessage extends BaseWsMessage {
+  type: 'MOVIE_STREAM_STARTED';
+  payload: {
+    ownerUserId: string;
+    movieStreamId: string;
+    fileName: string;
+    duration?: number;
+    timestamp: number;
+  };
+}
+
+export interface MovieStreamStoppedMessage extends BaseWsMessage {
+  type: 'MOVIE_STREAM_STOPPED';
+  payload?: {
+    ownerUserId?: string;
+    timestamp: number;
+  };
+}
+
+export interface MovieStreamControlMessage extends BaseWsMessage {
+  type: 'MOVIE_STREAM_CONTROL';
+  action: 'play' | 'pause' | 'stop';
+  currentTime?: number;
+}
+
+export interface MovieStreamSeekMessage extends BaseWsMessage {
+  type: 'MOVIE_STREAM_SEEK';
+  currentTime: number;
+  isPlaying?: boolean;
+}
+
 export type PeerConnectionState = 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed';
 
 export interface PeerMediaState {
@@ -208,9 +243,11 @@ export interface PeerMediaState {
   cameraEnabled: boolean;
   callJoined: boolean;
   screenSharing?: boolean;
+  isMovieStreaming?: boolean;
   isHost?: boolean;
   stream?: MediaStream;
   screenStream?: MediaStream;
+  movieStream?: MediaStream;
   connectionState?: PeerConnectionState;
   updatedAt?: number;
 }
@@ -284,6 +321,10 @@ export type ClientMessage =
   | MediaStateChangedMessage
   | ScreenShareStartedMessage
   | ScreenShareStoppedMessage
+  | MovieStreamStartedMessage
+  | MovieStreamStoppedMessage
+  | MovieStreamControlMessage
+  | MovieStreamSeekMessage
   | VideoPlayMessage
   | VideoPauseMessage
   | VideoSeekMessage
@@ -340,6 +381,10 @@ export type ServerMessage =
   | MediaStateChangedMessage
   | ScreenShareStartedMessage
   | ScreenShareStoppedMessage
+  | MovieStreamStartedMessage
+  | MovieStreamStoppedMessage
+  | MovieStreamControlMessage
+  | MovieStreamSeekMessage
   | VideoPlayMessage
   | VideoPauseMessage
   | VideoSeekMessage

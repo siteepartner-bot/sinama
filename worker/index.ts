@@ -755,6 +755,88 @@ export class RoomDurableObject {
         );
         break;
       }
+
+      case 'MOVIE_STREAM_STARTED': {
+        console.log('[MOVIE STREAM STARTED RECEIVED IN DO]', {
+          roomId: this.roomId,
+          senderId: message.senderId,
+          payload: (message as any).payload
+        });
+        this.broadcast(
+          {
+            type: 'MOVIE_STREAM_STARTED',
+            roomId: this.roomId,
+            senderId: message.senderId,
+            senderName: message.senderName,
+            payload: (message as any).payload,
+            timestamp: now
+          },
+          senderWs
+        );
+        break;
+      }
+
+      case 'MOVIE_STREAM_STOPPED': {
+        console.log('[MOVIE STREAM STOPPED RECEIVED IN DO]', {
+          roomId: this.roomId,
+          senderId: message.senderId
+        });
+        this.broadcast(
+          {
+            type: 'MOVIE_STREAM_STOPPED',
+            roomId: this.roomId,
+            senderId: message.senderId,
+            senderName: message.senderName,
+            payload: (message as any).payload,
+            timestamp: now
+          },
+          senderWs
+        );
+        break;
+      }
+
+      case 'MOVIE_STREAM_CONTROL': {
+        console.log('[MOVIE STREAM CONTROL RECEIVED IN DO]', {
+          roomId: this.roomId,
+          senderId: message.senderId,
+          action: (message as any).action
+        });
+        // Forward control request to all peers (especially the stream owner)
+        this.broadcast(
+          {
+            type: 'MOVIE_STREAM_CONTROL',
+            roomId: this.roomId,
+            senderId: message.senderId,
+            senderName: message.senderName,
+            action: (message as any).action,
+            currentTime: (message as any).currentTime,
+            timestamp: now
+          },
+          senderWs
+        );
+        break;
+      }
+
+      case 'MOVIE_STREAM_SEEK': {
+        console.log('[MOVIE STREAM SEEK RECEIVED IN DO]', {
+          roomId: this.roomId,
+          senderId: message.senderId,
+          currentTime: (message as any).currentTime
+        });
+        this.broadcast(
+          {
+            type: 'MOVIE_STREAM_SEEK',
+            roomId: this.roomId,
+            senderId: message.senderId,
+            senderName: message.senderName,
+            currentTime: (message as any).currentTime,
+            isPlaying: (message as any).isPlaying,
+            timestamp: now
+          },
+          senderWs
+        );
+        break;
+      }
     }
   }
 

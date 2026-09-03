@@ -599,6 +599,14 @@ class DurableRoomService implements IRoomService {
     realTimeClient.emitVideoEnded(currentTime);
   }
 
+  sendMovieControl(action: 'play' | 'pause' | 'stop', currentTime?: number): void {
+    realTimeClient.emitMovieStreamControl(action, currentTime);
+  }
+
+  sendMovieSeek(currentTime: number, isPlaying?: boolean): void {
+    realTimeClient.emitMovieStreamSeek(currentTime, isPlaying);
+  }
+
   // --- Public API Methods ---
 
   async createRoom(hostName: string, roomName?: string, customRoomId?: string): Promise<{ room: Room; currentUser: RoomUser }> {
