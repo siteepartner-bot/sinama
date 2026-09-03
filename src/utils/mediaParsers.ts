@@ -120,32 +120,6 @@ export function isValidDirectVideoUrl(url: string): boolean {
   return true;
 }
 
-export interface ParsedDirectVideo {
-  isValid: boolean;
-  url: string;
-  title: string;
-}
-
-export function parseDirectVideoUrl(url: string): ParsedDirectVideo | null {
-  if (!isValidDirectVideoUrl(url)) return null;
-  const clean = url.trim();
-  let title = 'ویدیوی مستقیم';
-  try {
-    const pathname = new URL(clean).pathname;
-    const filename = pathname.split('/').pop();
-    if (filename && filename.includes('.')) {
-      title = decodeURIComponent(filename);
-    }
-  } catch {
-    // ignore
-  }
-  return {
-    isValid: true,
-    url: clean,
-    title,
-  };
-}
-
 /**
  * Format seconds to MM:SS or HH:MM:SS
  */

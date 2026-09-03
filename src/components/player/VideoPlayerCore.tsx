@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Tv, Globe, Play, Youtube, Zap } from 'lucide-react';
+import { Tv, Globe, Play, Youtube } from 'lucide-react';
 import { MediaState } from '../../types';
 import { YouTubePlayer } from './YouTubePlayer';
 import { AparatPlayer } from './AparatPlayer';
@@ -87,10 +87,10 @@ export function VideoPlayerCore({
             <button
               type="button"
               onClick={() => onSelectSampleSource('direct')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs rounded-xl font-bold transition-all cursor-pointer shadow-sm shadow-rose-500/10"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 text-xs rounded-xl font-medium transition-all cursor-pointer"
             >
-              <Zap className="h-3.5 w-3.5 text-rose-400" />
-              <span>پلیر اختصاصی (پیشنهادی)</span>
+              <Globe className="h-3.5 w-3.5" />
+              <span>ویدیوی مستقیم</span>
             </button>
             <button
               type="button"
@@ -98,7 +98,7 @@ export function VideoPlayerCore({
               className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-orange-500/10 hover:bg-orange-500/20 text-orange-400 border border-orange-500/20 text-xs rounded-xl font-medium transition-all cursor-pointer"
             >
               <Play className="h-3.5 w-3.5" />
-              <span>آپارات</span>
+              <span>ویدیوی آپارات</span>
             </button>
             <button
               type="button"
