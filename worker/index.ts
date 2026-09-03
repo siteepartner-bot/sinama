@@ -686,6 +686,9 @@ export class RoomDurableObject {
             this.room.users[userIdx].micEnabled = message.payload.micEnabled;
             this.room.users[userIdx].cameraEnabled = message.payload.cameraEnabled;
             this.room.users[userIdx].callJoined = message.payload.callJoined;
+            if (message.payload.screenSharingEnabled !== undefined) {
+              this.room.users[userIdx].screenSharingEnabled = message.payload.screenSharingEnabled;
+            }
             await this.persistState();
           }
         }
@@ -698,6 +701,56 @@ export class RoomDurableObject {
           timestamp: now
         };
         this.broadcast(payload, senderWs);
+        break;
+      }
+
+      case 'SCREEN_SHARE_STARTED': {
+        console.log('[SCREEN SHARE STARTED RECEIVED IN DO]', {
+          roomId: this.roomId,
+          senderId: message.senderId
+        });
+        if (this.room) {
+          const userIdx = this.room.users.findIndex((u) => u.userId === message.senderId);
+          if (userIdx >= 0) {
+            this.room.users[userIdx].screenSharingEnabled = true;
+            await this.persistState();
+          }
+        }
+        this.broadcast(
+          {
+            type: 'SCREEN_SHARE_STARTED',
+            roomId: this.roomId,
+            senderId: message.senderId,
+            senderName: message.senderName,
+            timestamp: now
+          },
+          senderWs
+        );
+        break;
+      }
+
+      case 'SCREEN_SHARE_STOPPED': {
+        console.log('[SCREEN SHARE STOPPED RECEIVED IN DO]', {
+          roomId: this.roomId,
+          senderId: message.senderId
+        });
+        if (this.room) {
+          const userIdx = this.room.users.findIndex((u) => u.userId === message.senderId);
+          if (userIdx >= 0) {
+            this.room.users[userIdx].screenSharingEnabled = false;
+            await this.persistState();
+          }
+        }
+        this.broadcast(
+          {
+            type: 'SCREEN_SHARE_STOPPED',
+            roomId: this.roomId,
+            senderId: message.senderId,
+            senderName: message.senderName,
+            timestamp: now
+          },
+          senderWs
+        );
         break;
       }
     }

@@ -351,6 +351,7 @@ export class RealTimeClient {
     micEnabled: boolean;
     cameraEnabled: boolean;
     callJoined: boolean;
+    screenSharingEnabled?: boolean;
     updatedAt: number;
   }): void {
     if (!this.roomId || !this.currentUser) return;
@@ -360,6 +361,30 @@ export class RealTimeClient {
       senderId: this.currentUser.userId,
       senderName: this.currentUser.name,
       payload,
+      timestamp: Date.now()
+    });
+  }
+
+  public emitScreenShareStarted(): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[SCREEN SHARE STARTED SIGNAL SENT]', { userId: this.currentUser.userId });
+    this.sendMessage({
+      type: 'SCREEN_SHARE_STARTED',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      timestamp: Date.now()
+    });
+  }
+
+  public emitScreenShareStopped(): void {
+    if (!this.roomId || !this.currentUser) return;
+    console.log('[SCREEN SHARE STOPPED SIGNAL SENT]', { userId: this.currentUser.userId });
+    this.sendMessage({
+      type: 'SCREEN_SHARE_STOPPED',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
       timestamp: Date.now()
     });
   }

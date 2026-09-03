@@ -107,7 +107,9 @@ export type WebRTCEventType =
   | 'WEBRTC_OFFER'
   | 'WEBRTC_ANSWER'
   | 'WEBRTC_ICE_CANDIDATE'
-  | 'MEDIA_STATE_CHANGED';
+  | 'MEDIA_STATE_CHANGED'
+  | 'SCREEN_SHARE_STARTED'
+  | 'SCREEN_SHARE_STOPPED';
 
 export type ClientMessageType =
   | 'JOIN_ROOM'
@@ -177,7 +179,22 @@ export interface MediaStateChangedMessage extends BaseWsMessage {
     micEnabled: boolean;
     cameraEnabled: boolean;
     callJoined: boolean;
+    screenSharingEnabled?: boolean;
     updatedAt: number;
+  };
+}
+
+export interface ScreenShareStartedMessage extends BaseWsMessage {
+  type: 'SCREEN_SHARE_STARTED';
+  payload?: {
+    timestamp: number;
+  };
+}
+
+export interface ScreenShareStoppedMessage extends BaseWsMessage {
+  type: 'SCREEN_SHARE_STOPPED';
+  payload?: {
+    timestamp: number;
   };
 }
 
@@ -189,8 +206,10 @@ export interface PeerMediaState {
   micEnabled: boolean;
   cameraEnabled: boolean;
   callJoined: boolean;
+  screenSharing?: boolean;
   isHost?: boolean;
   stream?: MediaStream;
+  screenStream?: MediaStream;
   connectionState?: PeerConnectionState;
   updatedAt?: number;
 }
@@ -262,6 +281,8 @@ export type ClientMessage =
   | WebRTCAnswerMessage
   | WebRTCIceCandidateMessage
   | MediaStateChangedMessage
+  | ScreenShareStartedMessage
+  | ScreenShareStoppedMessage
   | VideoPlayMessage
   | VideoPauseMessage
   | VideoSeekMessage
@@ -316,6 +337,8 @@ export type ServerMessage =
   | WebRTCAnswerMessage
   | WebRTCIceCandidateMessage
   | MediaStateChangedMessage
+  | ScreenShareStartedMessage
+  | ScreenShareStoppedMessage
   | VideoPlayMessage
   | VideoPauseMessage
   | VideoSeekMessage

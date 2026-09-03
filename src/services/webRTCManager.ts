@@ -14,21 +14,28 @@ import { realTimeClient } from './realtimeClient';
 
 export interface WebRTCManagerListeners {
   onLocalStreamChange?: (stream: MediaStream | null) => void;
+  onLocalScreenStreamChange?: (stream: MediaStream | null) => void;
   onRemoteStreamsChange?: (remoteStreams: Map<string, MediaStream>) => void;
+  onRemoteScreenStreamsChange?: (remoteScreenStreams: Map<string, MediaStream>) => void;
   onPeerStatesChange?: (peerStates: Map<string, PeerMediaState>) => void;
   onError?: (errorMessage: string) => void;
   onCallStateChange?: (isInCall: boolean) => void;
+  onScreenSharingChange?: (isScreenSharing: boolean) => void;
 }
 
 /**
  * WebRTCManager - Modular Multi-User WebRTC Mesh Service.
  * Manages MediaStreams, RTCPeerConnections per peer, deterministic collision-free Perfect Negotiation,
- * ICE candidates queuing, graceful fallback, and clean lifecycle teardown.
+ * ICE candidates queuing, graceful fallback, Screen Sharing, and clean lifecycle teardown.
  */
 export class WebRTCManager {
   private localStream: MediaStream | null = null;
+  private localScreenStream: MediaStream | null = null;
+  private isScreenSharing = false;
+
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
   private remoteStreams: Map<string, MediaStream> = new Map();
+  private remoteScreenStreams: Map<string, MediaStream> = new Map();
   private peerMediaStates: Map<string, PeerMediaState> = new Map();
   private iceCandidatesQueue: Map<string, RTCIceCandidateInit[]> = new Map();
   private makingOffer: Map<string, boolean> = new Map();
@@ -37,6 +44,7 @@ export class WebRTCManager {
   private isInCall = false;
   private localMicEnabled = false;
   private localCameraEnabled = false;
+  private isCleaningUpScreenShare = false;
 
   private listeners: Set<WebRTCManagerListeners> = new Set();
   private realTimeUnsub: (() => void) | null = null;
@@ -72,9 +80,12 @@ export class WebRTCManager {
     this.listeners.add(listener);
     // Initial emit
     listener.onLocalStreamChange?.(this.localStream);
+    listener.onLocalScreenStreamChange?.(this.localScreenStream);
     listener.onRemoteStreamsChange?.(new Map(this.remoteStreams));
+    listener.onRemoteScreenStreamsChange?.(new Map(this.remoteScreenStreams));
     listener.onPeerStatesChange?.(new Map(this.peerMediaStates));
     listener.onCallStateChange?.(this.isInCall);
+    listener.onScreenSharingChange?.(this.isScreenSharing);
 
     return () => {
       this.listeners.delete(listener);
@@ -85,9 +96,22 @@ export class WebRTCManager {
     this.listeners.forEach((l) => l.onLocalStreamChange?.(this.localStream));
   }
 
+  private notifyLocalScreenStream(): void {
+    this.listeners.forEach((l) => l.onLocalScreenStreamChange?.(this.localScreenStream));
+  }
+
   private notifyRemoteStreams(): void {
     const copy = new Map(this.remoteStreams);
     this.listeners.forEach((l) => l.onRemoteStreamsChange?.(copy));
+  }
+
+  private notifyRemoteScreenStreams(): void {
+    const copy = new Map(this.remoteScreenStreams);
+    this.listeners.forEach((l) => l.onRemoteScreenStreamsChange?.(copy));
+  }
+
+  private notifyScreenSharing(): void {
+    this.listeners.forEach((l) => l.onScreenSharingChange?.(this.isScreenSharing));
   }
 
   private notifyPeerStates(): void {
@@ -211,7 +235,59 @@ export class WebRTCManager {
         peer.callJoined = mediaMsg.payload.callJoined;
         peer.updatedAt = mediaMsg.payload.updatedAt;
 
+        if (mediaMsg.payload.screenSharingEnabled !== undefined) {
+          peer.screenSharing = mediaMsg.payload.screenSharingEnabled;
+          if (!mediaMsg.payload.screenSharingEnabled) {
+            peer.screenStream = undefined;
+            const st = this.remoteScreenStreams.get(remoteUserId);
+            if (st) {
+              st.getTracks().forEach((t) => t.stop());
+              this.remoteScreenStreams.delete(remoteUserId);
+            }
+            this.notifyRemoteScreenStreams();
+          }
+        }
+
         this.peerMediaStates.set(remoteUserId, peer);
+        this.notifyPeerStates();
+        break;
+      }
+
+      case 'SCREEN_SHARE_STARTED': {
+        const remoteUserId = message.senderId;
+        console.log('[SCREEN SHARE STARTED SIGNAL RECEIVED]', { remoteUserId });
+        if (remoteUserId === currentUser.userId) return;
+
+        const peer = this.peerMediaStates.get(remoteUserId) || {
+          userId: remoteUserId,
+          name: message.senderName || 'کاربر',
+          micEnabled: true,
+          cameraEnabled: false,
+          callJoined: true,
+          updatedAt: Date.now()
+        };
+        peer.screenSharing = true;
+        this.peerMediaStates.set(remoteUserId, peer);
+        this.notifyPeerStates();
+        break;
+      }
+
+      case 'SCREEN_SHARE_STOPPED': {
+        const remoteUserId = message.senderId;
+        console.log('[SCREEN SHARE STOPPED SIGNAL RECEIVED]', { remoteUserId });
+        if (remoteUserId === currentUser.userId) return;
+
+        const peer = this.peerMediaStates.get(remoteUserId);
+        if (peer) {
+          peer.screenSharing = false;
+          peer.screenStream = undefined;
+        }
+        const st = this.remoteScreenStreams.get(remoteUserId);
+        if (st) {
+          st.getTracks().forEach((t) => t.stop());
+          this.remoteScreenStreams.delete(remoteUserId);
+        }
+        this.notifyRemoteScreenStreams();
         this.notifyPeerStates();
         break;
       }
@@ -257,7 +333,7 @@ export class WebRTCManager {
       });
     }
 
-    // 1. Send Local Tracks to Peer
+    // 1. Send Local Camera/Mic Tracks to Peer
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => {
         if (this.localStream) {
@@ -266,6 +342,18 @@ export class WebRTCManager {
           } catch (err) {
             console.warn('Track already added or failed to add track', err);
           }
+        }
+      });
+    }
+
+    // 1b. Send Local Screen Share Tracks to Peer if active
+    if (this.localScreenStream && this.isScreenSharing) {
+      this.localScreenStream.getTracks().forEach((track) => {
+        try {
+          pc!.addTrack(track, this.localScreenStream!);
+          console.log('[SCREEN TRACK ADDED TO NEW PEER CONNECTION]', { remoteUserId, kind: track.kind });
+        } catch (err) {
+          console.warn('Failed to add screen track to new peer connection', err);
         }
       });
     }
@@ -279,15 +367,47 @@ export class WebRTCManager {
 
     // 3. Handle Remote Track
     pc.ontrack = (event) => {
-      console.log('[REMOTE TRACK]', {
+      console.log('[REMOTE TRACK RECEIVED]', {
         remoteUserId,
         kind: event.track.kind,
-        streamsLength: event.streams.length
+        streamId: event.streams[0]?.id,
+        trackId: event.track.id
       });
 
-      let remoteStream = this.remoteStreams.get(remoteUserId);
+      const incomingStream = event.streams[0] || new MediaStream([event.track]);
+      const cameraStream = this.remoteStreams.get(remoteUserId);
+      const peerState = this.peerMediaStates.get(remoteUserId);
+
+      // Distinguish screen share track vs camera/mic track
+      const isScreenTrack =
+        (cameraStream && incomingStream.id !== cameraStream.id) ||
+        (cameraStream && cameraStream.getVideoTracks().length > 0 && event.track.kind === 'video') ||
+        (peerState?.screenSharing && incomingStream.id !== cameraStream?.id);
+
+      if (isScreenTrack) {
+        let screenStream = this.remoteScreenStreams.get(remoteUserId);
+        if (!screenStream) {
+          screenStream = incomingStream;
+          this.remoteScreenStreams.set(remoteUserId, screenStream);
+        } else {
+          if (!screenStream.getTracks().some((t) => t.id === event.track.id)) {
+            screenStream.addTrack(event.track);
+          }
+        }
+        if (peerState) {
+          peerState.screenStream = screenStream;
+          peerState.screenSharing = true;
+        }
+        console.log('[REMOTE SCREEN STREAM ASSIGNED]', { remoteUserId });
+        this.notifyRemoteScreenStreams();
+        this.notifyPeerStates();
+        return;
+      }
+
+      // Default: Camera / Microphone Stream
+      let remoteStream = cameraStream;
       if (!remoteStream) {
-        remoteStream = event.streams[0] || new MediaStream();
+        remoteStream = incomingStream;
         this.remoteStreams.set(remoteUserId, remoteStream);
       } else {
         if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
@@ -295,7 +415,6 @@ export class WebRTCManager {
         }
       }
 
-      const peerState = this.peerMediaStates.get(remoteUserId);
       if (peerState) {
         peerState.stream = remoteStream;
       }
@@ -666,7 +785,171 @@ export class WebRTCManager {
   }
 
   /**
-   * Closes a single peer connection and cleans up its remote stream.
+   * Starts sharing local screen using getDisplayMedia without tearing down WebRTC call or camera stream.
+   */
+  public async startScreenShare(): Promise<boolean> {
+    if (this.isScreenSharing) return true;
+
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      const errStr = 'مرورگر یا دستگاه شما از اشتراک‌گذاری صفحه نمایش پشتیبانی نمی‌کند.';
+      this.notifyError(errStr);
+      return false;
+    }
+
+    try {
+      console.log('[START SCREEN SHARE REQUESTED]');
+      let displayStream: MediaStream;
+      try {
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true
+        });
+      } catch (err) {
+        console.warn('getDisplayMedia with system audio failed, falling back to video only:', err);
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false
+        });
+      }
+
+      const screenVideoTrack = displayStream.getVideoTracks()[0];
+      if (!screenVideoTrack) {
+        throw new Error('هیچ تصویر ویدیویی از صفحه نمایش دریافت نشد.');
+      }
+
+      this.localScreenStream = displayStream;
+      this.isScreenSharing = true;
+
+      // Handle browser's native "Stop Sharing" UI banner click
+      screenVideoTrack.onended = () => {
+        console.log('[SCREEN TRACK ENDED VIA BROWSER UI]');
+        this.stopScreenShare();
+      };
+
+      // Add screen tracks to all peer connections
+      this.syncScreenTracksWithAllPeers();
+
+      realTimeClient.emitScreenShareStarted();
+      realTimeClient.emitMediaStateChanged({
+        micEnabled: this.localMicEnabled,
+        cameraEnabled: this.localCameraEnabled,
+        callJoined: this.isInCall,
+        screenSharingEnabled: true,
+        updatedAt: Date.now()
+      });
+
+      this.notifyLocalScreenStream();
+      this.notifyScreenSharing();
+      this.notifyPeerStates();
+
+      return true;
+    } catch (err: unknown) {
+      const error = err as { name?: string; message?: string };
+      console.warn('Screen share cancelled or failed:', err);
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        // User cancelled dialog
+        return false;
+      }
+      const msg = error.message || 'خطا در اشتراک‌گذاری صفحه نمایش.';
+      this.notifyError(msg);
+      return false;
+    }
+  }
+
+  /**
+   * Synchronizes local screen share tracks across all open RTCPeerConnections.
+   */
+  public syncScreenTracksWithAllPeers(): void {
+    if (!this.localScreenStream) return;
+    const screenTracks = this.localScreenStream.getTracks();
+
+    this.peerConnections.forEach((pc, remoteUserId) => {
+      if (pc.signalingState === 'closed') return;
+      const senders = pc.getSenders();
+
+      screenTracks.forEach((track) => {
+        const alreadyAdded = senders.some((s) => s.track?.id === track.id);
+        if (!alreadyAdded) {
+          try {
+            pc.addTrack(track, this.localScreenStream!);
+            console.log('[SCREEN TRACK ADDED TO PEER]', { remoteUserId, kind: track.kind });
+          } catch (err) {
+            console.warn('Failed to add screen track to peer:', err);
+          }
+        }
+      });
+    });
+  }
+
+  /**
+   * Stops screen sharing, removes screen tracks from peer connections, and notifies room without breaking call.
+   */
+  public async stopScreenShare(): Promise<void> {
+    if (this.isCleaningUpScreenShare || (!this.isScreenSharing && !this.localScreenStream)) return;
+    this.isCleaningUpScreenShare = true;
+
+    console.log('[STOP SCREEN SHARE REQUESTED]');
+
+    try {
+      if (this.localScreenStream) {
+        const screenTrackIds = new Set(this.localScreenStream.getTracks().map((t) => t.id));
+
+        this.peerConnections.forEach((pc) => {
+          if (pc.signalingState === 'closed') return;
+          const senders = pc.getSenders();
+          senders.forEach((sender) => {
+            if (sender.track && screenTrackIds.has(sender.track.id)) {
+              try {
+                pc.removeTrack(sender);
+              } catch (err) {
+                console.warn('Failed to remove screen track sender:', err);
+              }
+            }
+          });
+        });
+
+        this.localScreenStream.getTracks().forEach((track) => {
+          try {
+            track.onended = null;
+            track.stop();
+          } catch {}
+        });
+      }
+
+      this.localScreenStream = null;
+      this.isScreenSharing = false;
+
+      realTimeClient.emitScreenShareStopped();
+      realTimeClient.emitMediaStateChanged({
+        micEnabled: this.localMicEnabled,
+        cameraEnabled: this.localCameraEnabled,
+        callJoined: this.isInCall,
+        screenSharingEnabled: false,
+        updatedAt: Date.now()
+      });
+
+      this.notifyLocalScreenStream();
+      this.notifyScreenSharing();
+      this.notifyPeerStates();
+    } finally {
+      this.isCleaningUpScreenShare = false;
+    }
+  }
+
+  /**
+   * Toggles screen sharing on or off.
+   */
+  public async toggleScreenShare(): Promise<boolean> {
+    if (this.isScreenSharing) {
+      await this.stopScreenShare();
+      return false;
+    } else {
+      return await this.startScreenShare();
+    }
+  }
+
+  /**
+   * Closes a single peer connection and cleans up its remote stream & screen stream.
    */
   public closePeerConnection(remoteUserId: string): void {
     console.log('[PEER CLOSED]', { remoteUserId });
@@ -686,19 +969,30 @@ export class WebRTCManager {
       this.remoteStreams.delete(remoteUserId);
     }
 
+    const screenSt = this.remoteScreenStreams.get(remoteUserId);
+    if (screenSt) {
+      screenSt.getTracks().forEach((t) => t.stop());
+      this.remoteScreenStreams.delete(remoteUserId);
+    }
+
     this.iceCandidatesQueue.delete(remoteUserId);
     this.makingOffer.delete(remoteUserId);
     this.isSettingRemoteAnswerPending.delete(remoteUserId);
     this.peerMediaStates.delete(remoteUserId);
 
     this.notifyRemoteStreams();
+    this.notifyRemoteScreenStreams();
     this.notifyPeerStates();
   }
 
   /**
-   * Leaves the WebRTC Call session and stops local tracks.
+   * Leaves the WebRTC Call session and stops local camera & screen tracks.
    */
   public leaveCall(): void {
+    if (this.isScreenSharing) {
+      this.stopScreenShare();
+    }
+
     if (!this.isInCall && !this.localStream) return;
     console.log('[LEAVE CALL CLEANUP]');
 
@@ -742,13 +1036,20 @@ export class WebRTCManager {
     });
     this.remoteStreams.clear();
 
+    this.remoteScreenStreams.forEach((st) => {
+      st.getTracks().forEach((t) => t.stop());
+    });
+    this.remoteScreenStreams.clear();
+
     this.iceCandidatesQueue.clear();
     this.makingOffer.clear();
     this.isSettingRemoteAnswerPending.clear();
     this.peerMediaStates.clear();
 
     this.notifyLocalStream();
+    this.notifyLocalScreenStream();
     this.notifyRemoteStreams();
+    this.notifyRemoteScreenStreams();
     this.notifyPeerStates();
     this.notifyCallState();
   }
@@ -770,8 +1071,16 @@ export class WebRTCManager {
     return this.localStream;
   }
 
+  public getLocalScreenStream(): MediaStream | null {
+    return this.localScreenStream;
+  }
+
   public getRemoteStreams(): Map<string, MediaStream> {
     return new Map(this.remoteStreams);
+  }
+
+  public getRemoteScreenStreams(): Map<string, MediaStream> {
+    return new Map(this.remoteScreenStreams);
   }
 
   public getPeerMediaStates(): Map<string, PeerMediaState> {
@@ -788,6 +1097,10 @@ export class WebRTCManager {
 
   public isLocalCameraOn(): boolean {
     return this.localCameraEnabled;
+  }
+
+  public isLocalScreenSharingOn(): boolean {
+    return this.isScreenSharing;
   }
 }
 

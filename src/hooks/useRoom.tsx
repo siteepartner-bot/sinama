@@ -30,9 +30,12 @@ interface RoomContextType {
   joinDirectly: (userName: string) => Promise<boolean>;
   leaveRoom: () => Promise<void>;
   localStream: MediaStream | null;
+  localScreenStream: MediaStream | null;
   remoteStreams: Map<string, MediaStream>;
+  remoteScreenStreams: Map<string, MediaStream>;
   peerMediaStates: Map<string, PeerMediaState>;
   isInCall: boolean;
+  isScreenSharing: boolean;
   joinCall: (initialMic?: boolean, initialCamera?: boolean) => Promise<boolean>;
   leaveCall: () => void;
   toggleMic: () => Promise<void>;
@@ -65,9 +68,12 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
 
   // WebRTC Media States
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [remoteScreenStreams, setRemoteScreenStreams] = useState<Map<string, MediaStream>>(new Map());
   const [peerMediaStates, setPeerMediaStates] = useState<Map<string, PeerMediaState>>(new Map());
   const [isInCall, setIsInCall] = useState<boolean>(false);
+  const [isScreenSharing, setIsScreenSharing] = useState<boolean>(false);
 
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const statusUnsubRef = useRef<(() => void) | null>(null);
@@ -88,9 +94,12 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsub = webRTCManager.subscribe({
       onLocalStreamChange: (stream) => setLocalStream(stream),
+      onLocalScreenStreamChange: (stream) => setLocalScreenStream(stream),
       onRemoteStreamsChange: (streams) => setRemoteStreams(streams),
+      onRemoteScreenStreamsChange: (streams) => setRemoteScreenStreams(streams),
       onPeerStatesChange: (states) => setPeerMediaStates(states),
       onCallStateChange: (inCall) => setIsInCall(inCall),
+      onScreenSharingChange: (sharing) => setIsScreenSharing(sharing),
       onError: (errMsg) => setError(errMsg)
     });
     return () => unsub();
@@ -337,9 +346,9 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
 
   const toggleScreenShare = async () => {
     if (!currentRoom || !currentUser) return;
-    const nextState = !currentUser.screenSharingEnabled;
-    await roomService.updateUserMedia(currentRoom.roomId, currentUser.userId, { screenSharingEnabled: nextState });
-    setCurrentUser((prev) => (prev ? { ...prev, screenSharingEnabled: nextState } : null));
+    const isSharing = await webRTCManager.toggleScreenShare();
+    await roomService.updateUserMedia(currentRoom.roomId, currentUser.userId, { screenSharingEnabled: isSharing });
+    setCurrentUser((prev) => (prev ? { ...prev, screenSharingEnabled: isSharing } : null));
   };
 
   // Send chat message
@@ -527,9 +536,12 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
         joinDirectly,
         leaveRoom,
         localStream,
+        localScreenStream,
         remoteStreams,
+        remoteScreenStreams,
         peerMediaStates,
         isInCall,
+        isScreenSharing,
         joinCall,
         leaveCall,
         toggleMic,

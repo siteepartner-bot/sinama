@@ -144,6 +144,7 @@ export function CallGrid({ isCollapsed = false, onToggleCollapse }: CallGridProp
                 isHost={currentUser.isHost || currentUser.userId === roomState.hostId}
                 micEnabled={currentUser.micEnabled}
                 cameraEnabled={currentUser.cameraEnabled}
+                screenSharing={currentUser.screenSharingEnabled}
                 callJoined={isInCall}
                 connectionState="connected"
                 id="local-video-tile"
@@ -156,6 +157,7 @@ export function CallGrid({ isCollapsed = false, onToggleCollapse }: CallGridProp
                 const isPeerCallJoined = !!(remoteUser.callJoined || peerState?.callJoined);
                 const isPeerMicOn = peerState ? peerState.micEnabled : remoteUser.micEnabled;
                 const isPeerCamOn = peerState ? peerState.cameraEnabled : remoteUser.cameraEnabled;
+                const isPeerScreenSharing = !!(remoteUser.screenSharingEnabled || peerState?.screenSharing);
                 const connState = peerState?.connectionState || (remoteStream ? 'connected' : 'connecting');
 
                 return (
@@ -167,6 +169,7 @@ export function CallGrid({ isCollapsed = false, onToggleCollapse }: CallGridProp
                     isHost={remoteUser.isHost || remoteUser.userId === roomState.hostId}
                     micEnabled={isPeerMicOn}
                     cameraEnabled={isPeerCamOn}
+                    screenSharing={isPeerScreenSharing}
                     callJoined={isPeerCallJoined}
                     connectionState={connState}
                     id={`remote-tile-${remoteUser.userId}`}

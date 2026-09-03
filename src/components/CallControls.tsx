@@ -19,6 +19,7 @@ export function CallControls({
   const {
     currentUser,
     isInCall,
+    isScreenSharing: localIsScreenSharing,
     joinCall,
     leaveCall,
     toggleMic,
@@ -31,7 +32,7 @@ export function CallControls({
 
   const isMicActive = currentUser.micEnabled && isInCall;
   const isCameraActive = currentUser.cameraEnabled && isInCall;
-  const isScreenSharing = !!currentUser.screenSharingEnabled;
+  const isScreenSharing = localIsScreenSharing || !!currentUser.screenSharingEnabled;
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-4 p-4 bg-[#12141c] border border-zinc-800/80 rounded-2xl shadow-xl w-full" id="call-controls-container">

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { Mic, MicOff, Video, VideoOff, Crown, VolumeX, Volume2, User as UserIcon } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, Crown, VolumeX, Volume2, User as UserIcon, Monitor } from 'lucide-react';
 import { PeerConnectionState } from '../types';
 
 interface VideoTileProps {
@@ -11,6 +11,7 @@ interface VideoTileProps {
   isHost?: boolean;
   micEnabled: boolean;
   cameraEnabled: boolean;
+  screenSharing?: boolean;
   callJoined?: boolean;
   connectionState?: PeerConnectionState;
   id?: string;
@@ -23,6 +24,7 @@ export function VideoTile({
   isHost,
   micEnabled,
   cameraEnabled,
+  screenSharing = false,
   callJoined = true,
   connectionState = 'connected',
   id
@@ -165,16 +167,28 @@ export function VideoTile({
 
       {/* Overlay Status Badges (Bottom) */}
       <div className="absolute bottom-2.5 right-2.5 left-2.5 flex items-center justify-between z-20 pointer-events-none">
-        {/* Audio status badge */}
-        <div
-          className={`p-1.5 rounded-lg backdrop-blur-md border shadow transition-colors ${
-            micEnabled
-              ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
-              : 'bg-rose-500/20 border-rose-500/40 text-rose-400'
-          }`}
-          title={micEnabled ? 'میکروفون فعال' : 'میکروفون قطع'}
-        >
-          {micEnabled ? <Mic className="h-3.5 w-3.5" /> : <MicOff className="h-3.5 w-3.5" />}
+        <div className="flex items-center gap-1.5">
+          {/* Audio status badge */}
+          <div
+            className={`p-1.5 rounded-lg backdrop-blur-md border shadow transition-colors ${
+              micEnabled
+                ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                : 'bg-rose-500/20 border-rose-500/40 text-rose-400'
+            }`}
+            title={micEnabled ? 'میکروفون فعال' : 'میکروفون قطع'}
+          >
+            {micEnabled ? <Mic className="h-3.5 w-3.5" /> : <MicOff className="h-3.5 w-3.5" />}
+          </div>
+
+          {/* Screen share active badge */}
+          {screenSharing && (
+            <div
+              className="p-1.5 rounded-lg bg-purple-500/20 border border-purple-500/40 text-purple-400 backdrop-blur-md shadow animate-pulse"
+              title="در حال اشتراک‌گذاری صفحه"
+            >
+              <Monitor className="h-3.5 w-3.5" />
+            </div>
+          )}
         </div>
 
         {/* Camera status badge */}

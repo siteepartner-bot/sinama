@@ -9,6 +9,7 @@ import { ChatPanel } from './ChatPanel';
 import { MediaSourcePanel } from './MediaSourcePanel';
 import { CallControls } from './CallControls';
 import { CallGrid } from './CallGrid';
+import { ScreenSharePanel } from './ScreenSharePanel';
 
 export function RoomPage() {
   const {
@@ -259,6 +260,11 @@ export function RoomPage() {
           {/* Theater Screen Canvas */}
           <div className="w-full">
             <VideoPlayer />
+          </div>
+
+          {/* Real-time Screen Share Panel (renders when screen sharing is active) */}
+          <div className="w-full">
+            <ScreenSharePanel />
           </div>
 
           {/* WebRTC Video / Audio Call Grid */}
