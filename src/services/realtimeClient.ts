@@ -256,6 +256,18 @@ export class RealTimeClient {
     });
   }
 
+  public emitRoomPermissionsChanged(allowAnyoneControl: boolean): void {
+    if (!this.roomId || !this.currentUser) return;
+    this.sendMessage({
+      type: 'ROOM_PERMISSIONS_CHANGED',
+      roomId: this.roomId,
+      senderId: this.currentUser.userId,
+      senderName: this.currentUser.name,
+      allowAnyoneControl,
+      timestamp: Date.now()
+    });
+  }
+
   // --- Internal Connection Logic ---
 
   private initBroadcastChannel(roomId: string): void {

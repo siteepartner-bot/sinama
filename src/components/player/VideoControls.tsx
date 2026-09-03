@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Pause, PictureInPicture2, RotateCcw, RotateCw } from 'lucide-react';
+import { Play, Pause, PictureInPicture2, RotateCcw, RotateCw, Lock, Unlock, Users, Crown } from 'lucide-react';
 import { ProgressBar } from './ProgressBar';
 import { VolumeControl } from './VolumeControl';
 import { QualityMenu } from './QualityMenu';
@@ -19,6 +19,9 @@ interface VideoControlsProps {
   videoTitle?: string;
   showControls?: boolean;
   isFullscreen?: boolean;
+  canControlVideo?: boolean;
+  isHost?: boolean;
+  allowAnyoneControl?: boolean;
   onTogglePlay: () => void;
   onSeek: (time: number) => void;
   onVolumeChange: (vol: number) => void;
@@ -42,6 +45,9 @@ export function VideoControls({
   videoTitle = 'پخش ویدیو',
   showControls = true,
   isFullscreen = false,
+  canControlVideo = true,
+  isHost = false,
+  allowAnyoneControl = true,
   onTogglePlay,
   onSeek,
   onVolumeChange,
@@ -65,17 +71,37 @@ export function VideoControls({
           id="custom-video-controls"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Top Bar: Title & Watch Party Indicator */}
-          <div className="flex items-center justify-between gap-4">
+          {/* Top Bar: Title & Watch Party Indicator & Permission Status */}
+          <div className="flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-2.5 min-w-0">
               <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse shrink-0" />
               <span className="text-xs font-semibold text-zinc-400 shrink-0">در حال تماشا:</span>
               <h4 className="text-sm font-bold text-zinc-100 truncate">{videoTitle}</h4>
             </div>
 
-            <div className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 bg-black/50 backdrop-blur-md rounded-full border border-zinc-800 text-[11px] font-medium text-zinc-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span>پخش زنده اختصاصی</span>
+            <div className="flex items-center gap-2">
+              {/* Permission Badge */}
+              {allowAnyoneControl ? (
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/20 backdrop-blur-md rounded-full border border-emerald-500/30 text-[11px] font-medium text-emerald-300">
+                  <Users className="h-3 w-3 text-emerald-400" />
+                  <span>کنترل آزاد برای همه</span>
+                </div>
+              ) : isHost ? (
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/20 backdrop-blur-md rounded-full border border-amber-500/30 text-[11px] font-medium text-amber-300">
+                  <Crown className="h-3 w-3 text-amber-400" />
+                  <span>کنترل فقط دست شما (میزبان)</span>
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-rose-500/20 backdrop-blur-md rounded-full border border-rose-500/30 text-[11px] font-medium text-rose-300">
+                  <Lock className="h-3 w-3 text-rose-400" />
+                  <span>کنترل فقط توسط مالک اتاق</span>
+                </div>
+              )}
+
+              <div className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 bg-black/50 backdrop-blur-md rounded-full border border-zinc-800 text-[11px] font-medium text-zinc-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span>پخش زنده اختصاصی</span>
+              </div>
             </div>
           </div>
 
@@ -87,6 +113,7 @@ export function VideoControls({
               duration={duration}
               bufferedTime={bufferedTime}
               onSeek={onSeek}
+              disabled={!canControlVideo}
             />
 
             {/* Actions Bar */}
@@ -96,9 +123,14 @@ export function VideoControls({
                 {/* Skip Backward 10s */}
                 <button
                   type="button"
-                  onClick={() => onSeek(Math.max(0, currentTime - 10))}
-                  className="p-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/80 transition-all cursor-pointer active:scale-95"
-                  title="۱۰ ثانیه عقب (کلید J یا جهت چپ)"
+                  onClick={() => canControlVideo && onSeek(Math.max(0, currentTime - 10))}
+                  disabled={!canControlVideo}
+                  className={`p-1.5 rounded-lg transition-all ${
+                    canControlVideo
+                      ? 'text-zinc-300 hover:text-white hover:bg-zinc-800/80 cursor-pointer active:scale-95'
+                      : 'text-zinc-600 cursor-not-allowed opacity-50'
+                  }`}
+                  title={canControlVideo ? '۱۰ ثانیه عقب (کلید J یا جهت چپ)' : 'کنترل ویدیو در انحصار مالک اتاق است'}
                   id="btn-skip-backward-10"
                 >
                   <RotateCcw className="h-4.5 w-4.5" />
@@ -107,12 +139,25 @@ export function VideoControls({
                 {/* Play / Pause Toggle */}
                 <button
                   type="button"
-                  onClick={onTogglePlay}
-                  className="p-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white transition-all cursor-pointer shadow-md shadow-rose-500/20 active:scale-95"
-                  title={isPlaying ? 'توقف موقت (Space / K)' : 'پخش (Space / K)'}
+                  onClick={() => canControlVideo && onTogglePlay()}
+                  disabled={!canControlVideo}
+                  className={`p-2 rounded-xl transition-all shadow-md ${
+                    canControlVideo
+                      ? 'bg-rose-500 hover:bg-rose-600 text-white cursor-pointer shadow-rose-500/20 active:scale-95'
+                      : 'bg-zinc-800 text-zinc-500 cursor-not-allowed shadow-none opacity-60'
+                  }`}
+                  title={
+                    !canControlVideo
+                      ? 'کنترل ویدیو توسط مالک محدود شده است'
+                      : isPlaying
+                      ? 'توقف موقت (Space / K)'
+                      : 'پخش (Space / K)'
+                  }
                   id="btn-play-pause"
                 >
-                  {isPlaying ? (
+                  {!canControlVideo ? (
+                    <Lock className="h-4.5 w-4.5 text-zinc-400" />
+                  ) : isPlaying ? (
                     <Pause className="h-5 w-5" />
                   ) : (
                     <Play className="h-5 w-5 fill-white ml-0.5" />
@@ -122,9 +167,14 @@ export function VideoControls({
                 {/* Skip Forward 10s */}
                 <button
                   type="button"
-                  onClick={() => onSeek(Math.min(duration || Infinity, currentTime + 10))}
-                  className="p-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/80 transition-all cursor-pointer active:scale-95"
-                  title="۱۰ ثانیه جلو (کلید L یا جهت راست)"
+                  onClick={() => canControlVideo && onSeek(Math.min(duration || Infinity, currentTime + 10))}
+                  disabled={!canControlVideo}
+                  className={`p-1.5 rounded-lg transition-all ${
+                    canControlVideo
+                      ? 'text-zinc-300 hover:text-white hover:bg-zinc-800/80 cursor-pointer active:scale-95'
+                      : 'text-zinc-600 cursor-not-allowed opacity-50'
+                  }`}
+                  title={canControlVideo ? '۱۰ ثانیه جلو (کلید L یا جهت راست)' : 'کنترل ویدیو در انحصار مالک اتاق است'}
                   id="btn-skip-forward-10"
                 >
                   <RotateCw className="h-4.5 w-4.5" />
@@ -167,7 +217,7 @@ export function VideoControls({
                   availableQualities={availableQualities}
                   playbackRate={playbackRate}
                   onQualityChange={onQualityChange}
-                  onPlaybackRateChange={onPlaybackRateChange}
+                  onPlaybackRateChange={canControlVideo ? onPlaybackRateChange : undefined}
                 />
 
                 {/* Fullscreen Button */}

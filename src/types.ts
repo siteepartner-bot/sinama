@@ -54,6 +54,7 @@ export interface Room {
   createdAt: number;
   users: RoomUser[];
   mediaState: MediaState;
+  allowAnyoneControl?: boolean; // If true: anyone can play/pause/seek; if false: only host can control
 }
 
 // Backward compatibility alias for RoomState
@@ -95,6 +96,7 @@ export type ClientMessageType =
   | 'LEAVE_ROOM'
   | 'PING'
   | 'CHAT_MESSAGE'
+  | 'ROOM_PERMISSIONS_CHANGED'
   | VideoEventType;
 
 export type ServerMessageType =
@@ -103,6 +105,7 @@ export type ServerMessageType =
   | 'USER_LEFT'
   | 'PONG'
   | 'CHAT_MESSAGE'
+  | 'ROOM_PERMISSIONS_CHANGED'
   | 'ERROR'
   | VideoEventType;
 
@@ -175,6 +178,11 @@ export interface PingMessage {
   timestamp: number;
 }
 
+export interface RoomPermissionsChangedMessage extends BaseWsMessage {
+  type: 'ROOM_PERMISSIONS_CHANGED';
+  allowAnyoneControl: boolean;
+}
+
 export type ClientMessage =
   | JoinRoomMessage
   | LeaveRoomMessage
@@ -186,6 +194,7 @@ export type ClientMessage =
   | VideoEndedMessage
   | LocalFileSelectedMessage
   | ChatWsMessage
+  | RoomPermissionsChangedMessage
   | PingMessage;
 
 export interface RoomStateSyncMessage {
@@ -233,6 +242,7 @@ export type ServerMessage =
   | VideoEndedMessage
   | LocalFileSelectedMessage
   | ChatWsMessage
+  | RoomPermissionsChangedMessage
   | PongMessage
   | ErrorMessage;
 

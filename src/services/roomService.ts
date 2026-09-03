@@ -449,10 +449,43 @@ class DurableRoomService implements IRoomService {
         }
         break;
       }
+
+      case 'ROOM_PERMISSIONS_CHANGED': {
+        room.allowAnyoneControl = msg.allowAnyoneControl;
+        rooms[roomId] = room;
+        this.saveRoomsMap(rooms);
+
+        const msgs = this.getMessagesForRoom(roomId);
+        msgs.push({
+          id: 'msg_perm_' + now,
+          senderId: 'system',
+          senderName: 'سیستم',
+          text: msg.allowAnyoneControl
+            ? 'مالک اتاق کنترل ویدیو را برای همه اعضا باز کرد (هر کسی می‌تواند ویدیو را متوقف یا پخش کند).'
+            : 'مالک اتاق کنترل ویدیو را محدود به خود کرد (کنترل فقط توسط مالک).',
+          timestamp: getPersianTimeStr(),
+          isSystem: true
+        });
+        this.saveMessagesForRoom(roomId, msgs);
+        this.notifySubscribers(roomId);
+        break;
+      }
     }
   }
 
   // --- Real-Time Broadcaster Methods (Local User Actions) ---
+
+  broadcastRoomPermissions(roomId: string, allowAnyoneControl: boolean): void {
+    const rooms = this.getRoomsMap();
+    const room = rooms[roomId];
+    if (room) {
+      room.allowAnyoneControl = allowAnyoneControl;
+      rooms[roomId] = room;
+      this.saveRoomsMap(rooms);
+      this.notifySubscribers(roomId);
+    }
+    realTimeClient.emitRoomPermissionsChanged(allowAnyoneControl);
+  }
 
   broadcastPlay(roomId: string, currentTime: number): void {
     if (realTimeClient.isRemoteEventActive) return;
@@ -558,7 +591,8 @@ class DurableRoomService implements IRoomService {
       hostId,
       createdAt: Date.now(),
       users: [hostUser],
-      mediaState: getDefaultMediaState()
+      mediaState: getDefaultMediaState(),
+      allowAnyoneControl: true
     };
 
     const initialMessage: ChatMessage = {

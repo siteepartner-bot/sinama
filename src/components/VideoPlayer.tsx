@@ -9,6 +9,9 @@ export function VideoPlayer({ onOpenSourcePanel }: VideoPlayerProps) {
   const {
     roomState,
     currentUser,
+    isHost,
+    canControlVideo,
+    allowAnyoneControl,
     changeVideoSource,
     setVideoPlaying,
     seekVideo,
@@ -43,6 +46,9 @@ export function VideoPlayer({ onOpenSourcePanel }: VideoPlayerProps) {
       <VideoPlayerCore
         mediaState={roomState?.mediaState || null}
         currentUserId={currentUser?.userId}
+        isHost={isHost}
+        canControlVideo={canControlVideo}
+        allowAnyoneControl={allowAnyoneControl}
         onPlayChange={handlePlayChange}
         onSeekChange={handleSeekChange}
         onRateChange={handleRateChange}

@@ -12,6 +12,9 @@ export interface DirectVideoPlayerProps {
   targetTime?: number;
   updatedAt?: number;
   playbackRate?: number;
+  canControlVideo?: boolean;
+  isHost?: boolean;
+  allowAnyoneControl?: boolean;
   onPlayChange?: (isPlaying: boolean, currentTime: number) => void;
   onSeekChange?: (time: number) => void;
   onRateChange?: (rate: number) => void;
@@ -26,6 +29,9 @@ export function DirectVideoPlayer({
   targetTime = 0,
   updatedAt = 0,
   playbackRate: externalPlaybackRate = 1,
+  canControlVideo = true,
+  isHost = false,
+  allowAnyoneControl = true,
   onPlayChange,
   onSeekChange,
   onRateChange,
@@ -182,6 +188,12 @@ export function DirectVideoPlayer({
 
   // Handle Play/Pause by local user action
   const handleTogglePlay = useCallback(() => {
+    if (!canControlVideo) {
+      setSyncFeedback('کنترل ویدیو در انحصار مالک اتاق است');
+      setTimeout(() => setSyncFeedback(null), 3000);
+      return;
+    }
+
     const video = videoRef.current;
     if (!video) return;
 
@@ -198,10 +210,16 @@ export function DirectVideoPlayer({
     } else {
       video.pause();
     }
-  }, [isEnded]);
+  }, [isEnded, canControlVideo]);
 
   // Handle Seek by local user action
   const handleSeek = useCallback((time: number) => {
+    if (!canControlVideo) {
+      setSyncFeedback('کنترل ویدیو در انحصار مالک اتاق است');
+      setTimeout(() => setSyncFeedback(null), 3000);
+      return;
+    }
+
     const video = videoRef.current;
     if (!video) return;
 
@@ -209,15 +227,21 @@ export function DirectVideoPlayer({
     video.currentTime = clampedTime;
     setCurrentTime(clampedTime);
     setIsEnded(false);
-  }, [duration]);
+  }, [duration, canControlVideo]);
 
   // Handle Playback Rate change by local user action
   const handlePlaybackRateChange = useCallback((rate: number) => {
+    if (!canControlVideo) {
+      setSyncFeedback('کنترل ویدیو در انحصار مالک اتاق است');
+      setTimeout(() => setSyncFeedback(null), 3000);
+      return;
+    }
+
     const video = videoRef.current;
     if (!video) return;
     video.playbackRate = rate;
     setPlaybackRate(rate);
-  }, []);
+  }, [canControlVideo]);
 
   // Handle Volume
   const handleVolumeChange = (newVol: number) => {
@@ -517,6 +541,9 @@ export function DirectVideoPlayer({
           videoTitle={title}
           showControls={showControls}
           isFullscreen={isFullscreen}
+          canControlVideo={canControlVideo}
+          isHost={isHost}
+          allowAnyoneControl={allowAnyoneControl}
           onTogglePlay={handleTogglePlay}
           onSeek={handleSeek}
           onVolumeChange={handleVolumeChange}

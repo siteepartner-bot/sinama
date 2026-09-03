@@ -12,6 +12,9 @@ import { parseYouTubeUrl, parseAparatUrl } from '../../utils/mediaParsers';
 interface VideoPlayerCoreProps {
   mediaState?: MediaState | null;
   currentUserId?: string;
+  isHost?: boolean;
+  canControlVideo?: boolean;
+  allowAnyoneControl?: boolean;
   onPlayChange?: (isPlaying: boolean, currentTime: number) => void;
   onSeekChange?: (time: number) => void;
   onRateChange?: (rate: number) => void;
@@ -23,6 +26,9 @@ interface VideoPlayerCoreProps {
 export function VideoPlayerCore({
   mediaState,
   currentUserId,
+  isHost = false,
+  canControlVideo = true,
+  allowAnyoneControl = true,
   onPlayChange,
   onSeekChange,
   onRateChange,
@@ -152,6 +158,9 @@ export function VideoPlayerCore({
           targetTime={mediaState.currentTime || 0}
           updatedAt={mediaState.updatedAt}
           playbackRate={mediaState.playbackRate || 1}
+          canControlVideo={canControlVideo}
+          isHost={isHost}
+          allowAnyoneControl={allowAnyoneControl}
           onPlayChange={onPlayChange}
           onSeekChange={onSeekChange}
           onRateChange={onRateChange}
@@ -169,6 +178,9 @@ export function VideoPlayerCore({
           targetTime={mediaState.currentTime || 0}
           updatedAt={mediaState.updatedAt}
           playbackRate={mediaState.playbackRate || 1}
+          canControlVideo={canControlVideo}
+          isHost={isHost}
+          allowAnyoneControl={allowAnyoneControl}
           onPlayChange={onPlayChange}
           onSeekChange={onSeekChange}
           onRateChange={onRateChange}

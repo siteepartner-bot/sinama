@@ -1,13 +1,13 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Youtube, Play, Globe, Laptop, Upload, Link2, Sparkles, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Youtube, Play, Globe, Laptop, Upload, Link2, Sparkles, AlertCircle, CheckCircle2, Lock } from 'lucide-react';
 import { useRoom } from '../hooks/useRoom';
 import { parseYouTubeUrl, parseAparatUrl, isValidDirectVideoUrl } from '../utils/mediaParsers';
 
 type TabType = 'youtube' | 'aparat' | 'direct' | 'local';
 
 export function MediaSourcePanel() {
-  const { changeVideoSource } = useRoom();
+  const { changeVideoSource, canControlVideo, isHost, allowAnyoneControl } = useRoom();
   const [activeTab, setActiveTab] = useState<TabType>('youtube');
   
   // URL Input states
@@ -42,6 +42,11 @@ export function MediaSourcePanel() {
     e.preventDefault();
     setErrorMsg(null);
 
+    if (!canControlVideo) {
+      setErrorMsg('کنترل و تغییر ویدیوی اتاق توسط مالک محدود شده است.');
+      return;
+    }
+
     const parsed = parseYouTubeUrl(youtubeUrl);
     if (!parsed.isValid || !parsed.videoId) {
       setErrorMsg('لینک یوتیوب معتبر نیست. لطفاً آدرس استاندارد (مانند youtube.com/watch?v=... یا youtu.be/...) را وارد کنید.');
@@ -57,6 +62,11 @@ export function MediaSourcePanel() {
     e.preventDefault();
     setErrorMsg(null);
 
+    if (!canControlVideo) {
+      setErrorMsg('کنترل و تغییر ویدیوی اتاق توسط مالک محدود شده است.');
+      return;
+    }
+
     const parsed = parseAparatUrl(aparatUrl);
     if (!parsed.isValid || !parsed.videoHash) {
       setErrorMsg('لینک آپارات معتبر نیست.');
@@ -71,6 +81,11 @@ export function MediaSourcePanel() {
   const handleDirectSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+
+    if (!canControlVideo) {
+      setErrorMsg('کنترل و تغییر ویدیوی اتاق توسط مالک محدود شده است.');
+      return;
+    }
 
     if (!isValidDirectVideoUrl(directUrl)) {
       setErrorMsg('لینک مستقیم وارد شده نامعتبر است. آدرس باید با http:// یا https:// شروع شود.');
@@ -104,6 +119,12 @@ export function MediaSourcePanel() {
 
   const loadLocalFile = (file: File) => {
     setErrorMsg(null);
+
+    if (!canControlVideo) {
+      setErrorMsg('کنترل و تغییر ویدیوی اتاق توسط مالک محدود شده است.');
+      return;
+    }
+
     const isVideoType = file.type.startsWith('video/') || file.type === 'video/x-matroska' || file.type === 'video/mkv';
     const hasVideoExt = /\.(mp4|mkv|webm|mov|ogg|avi|m4v|3gp|ts)$/i.test(file.name);
 
@@ -139,6 +160,12 @@ export function MediaSourcePanel() {
   // Sample quick links
   const loadSample = (type: TabType) => {
     setErrorMsg(null);
+
+    if (!canControlVideo) {
+      setErrorMsg('کنترل و تغییر ویدیوی اتاق توسط مالک محدود شده است.');
+      return;
+    }
+
     if (type === 'youtube') {
       const sample = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
       setYoutubeUrl(sample);
@@ -198,6 +225,16 @@ export function MediaSourcePanel() {
           );
         })}
       </div>
+
+      {/* Video Control Permission Notice */}
+      {!canControlVideo && (
+        <div className="flex items-center gap-2.5 p-3 mb-4 bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs rounded-xl" id="panel-locked-notice">
+          <Lock className="h-4 w-4 text-amber-400 shrink-0" />
+          <span className="leading-relaxed">
+            کنترل و تغییر ویدیوی اتاق در حال حاضر توسط مالک محدود شده است. برای تغییر ویدیو باید مالک دسترسی را باز کند.
+          </span>
+        </div>
+      )}
 
       {/* Error / Success Feedback banner */}
       <AnimatePresence>

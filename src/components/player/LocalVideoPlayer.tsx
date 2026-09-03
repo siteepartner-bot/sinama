@@ -9,6 +9,9 @@ export interface LocalVideoPlayerProps {
   targetTime?: number;
   updatedAt?: number;
   playbackRate?: number;
+  canControlVideo?: boolean;
+  isHost?: boolean;
+  allowAnyoneControl?: boolean;
   onPlayChange?: (isPlaying: boolean, currentTime: number) => void;
   onSeekChange?: (time: number) => void;
   onRateChange?: (rate: number) => void;
@@ -23,6 +26,9 @@ export function LocalVideoPlayer({
   targetTime = 0,
   updatedAt = 0,
   playbackRate = 1,
+  canControlVideo = true,
+  isHost = false,
+  allowAnyoneControl = true,
   onPlayChange,
   onSeekChange,
   onRateChange,
@@ -62,6 +68,9 @@ export function LocalVideoPlayer({
       targetTime={targetTime}
       updatedAt={updatedAt}
       playbackRate={playbackRate}
+      canControlVideo={canControlVideo}
+      isHost={isHost}
+      allowAnyoneControl={allowAnyoneControl}
       onPlayChange={onPlayChange}
       onSeekChange={onSeekChange}
       onRateChange={onRateChange}

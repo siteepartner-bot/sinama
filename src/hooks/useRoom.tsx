@@ -28,6 +28,10 @@ interface RoomContextType {
   setVideoQuality: (quality: string) => Promise<void>;
   setPlaybackRate: (rate: number) => Promise<void>;
   handleVideoEnded: () => Promise<void>;
+  allowAnyoneControl: boolean;
+  canControlVideo: boolean;
+  setRoomControlPermission: (allow: boolean) => Promise<void>;
+  toggleRoomControlPermission: () => Promise<void>;
 }
 
 const RoomContext = createContext<RoomContextType | undefined>(undefined);
@@ -283,6 +287,23 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     await roomService.sendChatMessage(currentRoom.roomId, currentUser.userId, currentUser.name, text);
   };
 
+  const isHost = !!(currentUser && currentRoom && (currentUser.isHost || currentUser.userId === currentRoom.hostId));
+  const allowAnyoneControl = currentRoom ? currentRoom.allowAnyoneControl !== false : true;
+  const canControlVideo = isHost || allowAnyoneControl;
+
+  const setRoomControlPermission = async (allow: boolean) => {
+    if (!currentRoom) return;
+    if (!isHost) {
+      setError('تنها مالک اتاق اجازه تغییر دسترسی کنترل ویدیو را دارد.');
+      return;
+    }
+    roomService.broadcastRoomPermissions(currentRoom.roomId, allow);
+  };
+
+  const toggleRoomControlPermission = async () => {
+    await setRoomControlPermission(!allowAnyoneControl);
+  };
+
   // Real-Time Video Synchronizers
   const changeVideoSource = async (
     sourceType: 'youtube' | 'aparat' | 'direct' | 'local',
@@ -290,6 +311,10 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
     title?: string
   ) => {
     if (!currentRoom) return;
+    if (!canControlVideo) {
+      setError('کنترل ویدیوی این اتاق در انحصار مالک اتاق است.');
+      return;
+    }
 
     if (sourceType === 'local') {
       // Local computer file: notify room about local file without streaming the blob
@@ -327,6 +352,10 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
 
   const setVideoPlaying = async (isPlaying: boolean, currentTime?: number) => {
     if (!currentRoom) return;
+    if (!canControlVideo) {
+      setError('کنترل پخش ویدیو در انحصار مالک اتاق است.');
+      return;
+    }
     const time = currentTime !== undefined ? currentTime : currentRoom.mediaState.currentTime || 0;
     if (isPlaying) {
       roomService.broadcastPlay(currentRoom.roomId, time);
@@ -337,17 +366,26 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
 
   const seekVideo = async (currentTime: number, isPlaying?: boolean) => {
     if (!currentRoom) return;
+    if (!canControlVideo) {
+      setError('کنترل زمان ویدیو در انحصار مالک اتاق است.');
+      return;
+    }
     roomService.broadcastSeek(currentRoom.roomId, currentTime, isPlaying);
   };
 
   const setPlaybackRate = async (playbackRate: number) => {
     if (!currentRoom) return;
+    if (!canControlVideo) {
+      setError('تغییر سرعت ویدیو در انحصار مالک اتاق است.');
+      return;
+    }
     const currentTime = currentRoom.mediaState.currentTime || 0;
     roomService.broadcastRateChange(currentRoom.roomId, playbackRate, currentTime);
   };
 
   const handleVideoEnded = async () => {
     if (!currentRoom) return;
+    if (!canControlVideo) return;
     const currentTime = currentRoom.mediaState.duration || currentRoom.mediaState.currentTime || 0;
     roomService.broadcastVideoEnded(currentRoom.roomId, currentTime);
   };
@@ -380,8 +418,6 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
       }
     : null;
 
-  const isHost = !!(currentUser && currentRoom && (currentUser.isHost || currentUser.userId === currentRoom.hostId));
-
   return (
     <RoomContext.Provider
       value={{
@@ -390,6 +426,10 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
         roomState,
         currentUser,
         isHost,
+        allowAnyoneControl,
+        canControlVideo,
+        setRoomControlPermission,
+        toggleRoomControlPermission,
         isLoading,
         error,
         pendingRoomId,

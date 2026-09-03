@@ -55,7 +55,8 @@ import {
   VideoRateChangedMessage,
   VideoEndedMessage,
   LocalFileSelectedMessage,
-  ChatWsMessage
+  ChatWsMessage,
+  RoomPermissionsChangedMessage
 } from '../src/types';
 
 export interface Env {
@@ -217,6 +218,12 @@ export class RoomDurableObject {
     return this.room;
   }
 
+  private canUserControlMedia(senderId: string): boolean {
+    if (!this.room) return false;
+    if (this.room.allowAnyoneControl !== false) return true;
+    return senderId === this.room.hostId;
+  }
+
   private async handleClientMessage(senderWs: WebSocket, message: ClientMessage): Promise<void> {
     const now = Date.now();
 
@@ -243,7 +250,8 @@ export class RoomDurableObject {
             hostId: user.userId,
             createdAt: now,
             users: [user],
-            mediaState: getDefaultMediaState()
+            mediaState: getDefaultMediaState(),
+            allowAnyoneControl: true
           };
         } else {
           // Add or update user in room
@@ -285,7 +293,7 @@ export class RoomDurableObject {
       }
 
       case 'VIDEO_PLAY': {
-        if (!this.room) return;
+        if (!this.room || !this.canUserControlMedia(message.senderId)) return;
         this.room.mediaState = {
           ...this.room.mediaState,
           isPlaying: true,
@@ -311,7 +319,7 @@ export class RoomDurableObject {
       }
 
       case 'VIDEO_PAUSE': {
-        if (!this.room) return;
+        if (!this.room || !this.canUserControlMedia(message.senderId)) return;
         this.room.mediaState = {
           ...this.room.mediaState,
           isPlaying: false,
@@ -336,7 +344,7 @@ export class RoomDurableObject {
       }
 
       case 'VIDEO_SEEK': {
-        if (!this.room) return;
+        if (!this.room || !this.canUserControlMedia(message.senderId)) return;
         this.room.mediaState = {
           ...this.room.mediaState,
           currentTime: message.currentTime,
@@ -362,7 +370,7 @@ export class RoomDurableObject {
       }
 
       case 'VIDEO_SOURCE_CHANGED': {
-        if (!this.room) return;
+        if (!this.room || !this.canUserControlMedia(message.senderId)) return;
         const source = message.source;
         this.room.mediaState = {
           ...this.room.mediaState,
@@ -396,7 +404,7 @@ export class RoomDurableObject {
       }
 
       case 'LOCAL_FILE_SELECTED': {
-        if (!this.room) return;
+        if (!this.room || !this.canUserControlMedia(message.senderId)) return;
         this.room.mediaState = {
           ...this.room.mediaState,
           sourceType: 'local',
@@ -429,7 +437,7 @@ export class RoomDurableObject {
       }
 
       case 'VIDEO_RATE_CHANGED': {
-        if (!this.room) return;
+        if (!this.room || !this.canUserControlMedia(message.senderId)) return;
         this.room.mediaState = {
           ...this.room.mediaState,
           playbackRate: message.playbackRate,
@@ -452,7 +460,7 @@ export class RoomDurableObject {
       }
 
       case 'VIDEO_ENDED': {
-        if (!this.room) return;
+        if (!this.room || !this.canUserControlMedia(message.senderId)) return;
         this.room.mediaState = {
           ...this.room.mediaState,
           isPlaying: false,
@@ -470,6 +478,33 @@ export class RoomDurableObject {
           timestamp: now
         };
         this.broadcast(payload, senderWs);
+        break;
+      }
+
+      case 'ROOM_PERMISSIONS_CHANGED': {
+        if (!this.room) return;
+        // Only host is authorized to change room control permissions
+        if (message.senderId !== this.room.hostId) {
+          this.sendToSocket(senderWs, {
+            type: 'ERROR',
+            message: 'تنها مالک اتاق اجازه تغییر دسترسی کنترل ویدیو را دارد.'
+          });
+          return;
+        }
+
+        this.room.allowAnyoneControl = message.allowAnyoneControl;
+        await this.persistState();
+
+        const payload: RoomPermissionsChangedMessage = {
+          type: 'ROOM_PERMISSIONS_CHANGED',
+          roomId: this.roomId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          allowAnyoneControl: message.allowAnyoneControl,
+          timestamp: now
+        };
+        // Broadcast to everyone (including sender) to ensure immediate sync
+        this.broadcast(payload);
         break;
       }
 
